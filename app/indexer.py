@@ -20,6 +20,8 @@ LLM_SERVICE = os.getenv('LLM_SERVICE', 'openai').lower()
 LLM_API_KEY = os.getenv('LLM_SERVICE_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY') # Service role key preferred for writing
+SUPABASE_SCHEMA = os.getenv('SUPABASE_SCHEMA', 'public') # Default to public if not set
+SUPABASE_TABLE = os.getenv('SUPABASE_TABLE', 'documents') # Default to documents if not set
 
 # --- Helper: Embedding Generator Factory ---
 class EmbeddingService:
@@ -151,7 +153,7 @@ class SharePointSync:
 
     def download_file(self, url, path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        print(f"⬇️ Downloading: {path}")
+        print(f"Downloading: {path}")
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
             with open(path, 'wb') as f:
@@ -160,7 +162,7 @@ class SharePointSync:
     def run(self):
         self.authenticate()
         site_id, drive_id = self.get_site_and_drive()
-        print("🔄 Starting SharePoint Sync...")
+        print("Starting SharePoint Sync...")
         self.process_folder(site_id, drive_id)
         
         with open(self.state_file, 'w') as f:
@@ -168,25 +170,22 @@ class SharePointSync:
         
         return self.updated_files
 
-# --- Part 2: Knowledge Base Indexer (New) ---
+# --- Part 2: Knowledge Base Indexer ---
 class KnowledgeBaseIndexer:
     def __init__(self, root_dir):
         self.root_dir = root_dir
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         self.embedder = EmbeddingService()
-        self.converter = DocumentConverter() # Docling converter
+        self.converter = DocumentConverter()
         
-        # We can optionally reuse chunking strategies from Docling
-        # But for simplicity, we rely on Docling's default output structure
-        
+        # Load schema/table config
+        self.db_schema = SUPABASE_SCHEMA
+        self.db_table = SUPABASE_TABLE
+
     def get_category_from_path(self, file_path):
-        """
-        Extracts the subfolder structure relative to root_dir.
-        Example: downloads/HR/Policies/file.pdf -> "HR/Policies"
-        """
+        """Extracts the subfolder structure relative to root_dir."""
         try:
             relative_path = file_path.relative_to(self.root_dir)
-            # Return the parent folder path as string. If it's in root, returns "."
             parent = relative_path.parent
             return str(parent) if str(parent) != "." else "Uncategorized"
         except ValueError:
@@ -196,30 +195,28 @@ class KnowledgeBaseIndexer:
         print(f"Processing with Docling: {file_path.name}")
         
         try:
-            # 1. Convert/Parse the document
+            # 1. Convert
             doc_result = self.converter.convert(file_path)
             doc = doc_result.document
             
-            # 2. Extract content & Chunk
-            # Docling provides structured output. We can iterate over texts.
-            # A simple strategy: Group by paragraphs or headers.
-            
             category = self.get_category_from_path(file_path)
             
-            # Clean existing entries for this file to avoid duplicates
-            self.supabase.table("documents").delete().eq("metadata->>filepath", str(file_path)).execute()
+            # 2. Cleanup Old Entries
+            # IMPORTANT: We explicitly call .schema() before .table()
+            (self.supabase
+                 .schema(self.db_schema)
+                 .table(self.db_table)
+                 .delete()
+                 .eq("metadata->>filepath", str(file_path))
+                 .execute())
 
             chunks_to_insert = []
             
-            # Iterating through Docling structure
-            # Depending on docling version, we might use doc.body.text or iterate items
-            # Here we try a simple text extraction per logical block
-            
             for item in doc.texts():
                 text_content = item.text.strip()
-                if not text_content or len(text_content) < 50: continue # Skip empty/short
+                if not text_content or len(text_content) < 50: continue 
                 
-                # 3. Generate Embedding
+                # 3. Embed
                 vector = self.embedder.get_embedding(text_content)
                 if not vector: continue
 
@@ -229,21 +226,27 @@ class KnowledgeBaseIndexer:
                     "metadata": {
                         "filepath": str(file_path),
                         "filename": file_path.name,
-                        "category": category, # <--- THE SUBFOLDER NAME
-                        "page_no": getattr(item, 'page_no', 1) # simple fallback
+                        "category": category, 
+                        "page_no": getattr(item, 'page_no', 1) 
                     },
                     "embedding": vector
                 }
                 chunks_to_insert.append(payload)
 
-            # 5. Batch Insert to Supabase
+            # 5. Batch Insert
             if chunks_to_insert:
-                # Supabase insert limit is usually high, but batching by 10 is safe
                 batch_size = 10
                 for i in range(0, len(chunks_to_insert), batch_size):
                     batch = chunks_to_insert[i:i + batch_size]
-                    self.supabase.table("documents").insert(batch).execute()
-                print(f"Indexed {len(chunks_to_insert)} chunks for {file_path.name} in category '{category}'")
+                    
+                    # IMPORTANT: Apply Schema and Table here as well
+                    (self.supabase
+                        .schema(self.db_schema)
+                        .table(self.db_table)
+                        .insert(batch)
+                        .execute())
+                        
+                print(f"Indexed {len(chunks_to_insert)} chunks for {file_path.name} in schema '{self.db_schema}'")
             else:
                 print(f"No readable text found in {file_path.name}")
 
@@ -251,18 +254,12 @@ class KnowledgeBaseIndexer:
             print(f"Failed to index {file_path.name}: {e}")
 
     def run_indexer(self, files_to_process=None):
-        """
-        If files_to_process is provided (from Sync), only index those.
-        Otherwise, scan the whole folder (useful for first run).
-        """
         if files_to_process:
-            # Only process specific list
-            print(f"Indexing {len(files_to_process)} new/modified files...")
+            print(f"Indexing {len(files_to_process)} new/modified files to {self.db_schema}.{self.db_table}...")
             for f in files_to_process:
                 self.index_file(f)
         else:
-            # Walk entire directory
-            print("Full scan indexing...")
+            print(f"Full scan indexing to {self.db_schema}.{self.db_table}...")
             for f in self.root_dir.rglob("*"):
                 if f.is_file() and f.suffix.lower() in ['.pdf', '.docx', '.pptx', '.md', '.txt']:
                     self.index_file(f)

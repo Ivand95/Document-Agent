@@ -12,11 +12,17 @@ $ uv venv
 $ source .venv/bin/activate or .venv/Scripts/activate
 
 $ cd <local_repository_name>
-$ cp env.example .env.local
+$ cp env.example .env
 
 ## ... fill .env.local accordingly ...
 
 $ uv run app/agent.py 
+```
+
+## Running Indexer:
+
+```bash
+$ uv run app/indexer.py - Manual indexing.
 ```
 
 ## Running Agent:
@@ -33,9 +39,3 @@ $ uv run app/agent.py start - Production version.
 $ uv run pytest
 ```
 
-## Deployment:
-
-```bash
-$ lk agent create - Must be done in the root of the project. Will stop existing sessions.
-$ lk agent deploy - Must be done in the root of the project. Will allow keep existing sessions alive for up to an hour.
-```
