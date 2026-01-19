@@ -264,6 +264,119 @@ class KnowledgeBaseIndexer:
                 if f.is_file() and f.suffix.lower() in ['.pdf', '.docx', '.pptx', '.md', '.txt']:
                     self.index_file(f)
 
+# --- Part 3: Interactive Chat Agent (New) ---
+class ChatAgent:
+    def __init__(self):
+        self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        self.embedder = EmbeddingService()
+        self.db_schema = SUPABASE_SCHEMA
+        
+        # Configure the LLM for chat generation
+        if LLM_SERVICE == 'openai':
+            self.chat_client = openai.OpenAI(api_key=LLM_API_KEY)
+        elif LLM_SERVICE == 'gemini':
+            genai.configure(api_key=LLM_API_KEY)
+            self.chat_model = genai.GenerativeModel('gemini-pro')
+
+    def search_documents(self, query_text, match_count=5):
+        """Searches the vector database for relevant content."""
+        query_vector = self.embedder.get_embedding(query_text)
+        
+        # Call the RPC function we created in SQL
+        # Note: RPC calls ignore .schema(), so we baked the schema 'private' into the SQL function itself.
+        # If your function name is just 'match_documents' inside schema 'private', you call it as is.
+        try:
+            rpc_params = {
+                "query_embedding": query_vector,
+                "match_threshold": 0.5, # Adjust based on strictness needed
+                "match_count": match_count
+            }
+            
+            # Note: The supabase-py client handles schema slightly differently for RPC.
+            # Usually, RPC functions are globally accessible if permissions allow, 
+            # but if it's strictly inside a schema, ensure your user has search_path set or function is public.
+            # Assuming the SQL function 'match_documents' was created in the schema defined:
+            
+            response = self.supabase.rpc(f"match_documents", rpc_params).execute()
+            return response.data
+        except Exception as e:
+            print(f"Search Error: {e}")
+            return []
+
+    def generate_response(self, query, context_chunks):
+        """Constructs a prompt and gets an answer from the LLM."""
+        
+        # 1. Prepare Context
+        context_text = "\n\n".join([f"SOURCE ({c['metadata']['filename']}): {c['content']}" for c in context_chunks])
+        
+        system_prompt = """You are a helpful assistant for a company. 
+        Answer the user's question using ONLY the context provided below. 
+        If the answer is not in the context, say "I don't have that information in my documents."
+        Include the source filename in your answer if relevant."""
+
+        full_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
+
+        # 2. Call LLM
+        if LLM_SERVICE == 'openai':
+            response = self.chat_client.chat.completions.create(
+                model="gpt-4o", # or gpt-3.5-turbo
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": full_prompt}
+                ]
+            )
+            return response.choices[0].message.content
+            
+        elif LLM_SERVICE == 'gemini':
+            # Gemini format
+            prompt = f"{system_prompt}\n\n{full_prompt}"
+            response = self.chat_model.generate_content(prompt)
+            return response.text
+            
+        return "LLM Service not configured for Chat."
+
+    def start_chat(self):
+        print("\n" + "="*50)
+        print("SharePoint Agent Ready. Type 'exit' or 'quit' to stop.")
+        print("="*50)
+        
+        while True:
+            user_input = input("\nYou: ")
+            if user_input.lower() in ['exit', 'quit', 'bye']:
+                print("Agent: Goodbye!")
+                break
+            
+            print("Agent: Thinking...")
+            
+            # 1. Retrieve
+            results = self.search_documents(user_input)
+            
+            if not results:
+                print("Agent: I couldn't find any relevant documents in the database.")
+                continue
+                
+            # 2. Generate
+            answer = self.generate_response(user_input, results)
+            print(f"Agent: {answer}")
+
+
+# --- Scheduled Indexing Execution Flow ---
+def scheduled_indexing():
+    DOWNLOAD_DIR = Path("./downloads")
+    
+    # 1. Run SharePoint Sync
+    syncer = SharePointSync(DOWNLOAD_DIR)
+    updated_files = syncer.run()
+    
+    # 2. Run Indexer
+    indexer = KnowledgeBaseIndexer(DOWNLOAD_DIR)
+    
+    if updated_files:
+        indexer.run_indexer(updated_files)
+    else:
+        print("No new files from SharePoint.")
+        
+
 # --- Main Execution Flow ---
 if __name__ == "__main__":
     DOWNLOAD_DIR = Path("./downloads")

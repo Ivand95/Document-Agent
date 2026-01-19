@@ -1,6 +1,8 @@
 import os
+import sys
 from typing import Annotated, List, Dict
 from typing_extensions import TypedDict
+from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import SupabaseVectorStore
@@ -8,15 +10,20 @@ from langchain_core.documents import Document
 from supabase.client import create_client, Client
 
 from langgraph.graph import StateGraph, END
+from indexer import ChatAgent
+
+
+load_dotenv()
 
 # Setup Supabase Client
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_SCHEMA = os.getenv('SUPABASE_SCHEMA', 'public') # Default to public if not set
 SUPABASE_TABLE = os.getenv('SUPABASE_TABLE', 'documents') # Default to documents if not set
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-embeddings = OpenAIEmbeddings()
+embeddings = OpenAIEmbeddings(api_key=os.getenv("LLM_SERVICE_API_KEY"))
 
 # Initialize Vector Store
 vector_store = SupabaseVectorStore(
@@ -47,7 +54,7 @@ def retrieve_documents(state: AgentState):
     
     # METADATA FILTERING
     # This assumes your vector metadata looks like: {"department": "HR", "source": "..."}
-    filters = {"department": department}
+    filters = {"category": department, "category": "General", "category": "OTROS"}
     
     # Perform similarity search with filter
     docs = vector_store.similarity_search(
@@ -93,3 +100,15 @@ workflow.add_edge("retrieve", "generate")
 workflow.add_edge("generate", END)
 
 app_graph = workflow.compile()
+
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    try:
+        agent = ChatAgent()
+        agent.start_chat()
+    except KeyboardInterrupt:
+        print("\nAgent: Goodbye! (Interrupted)")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nCritical Error starting chat: {e}")
