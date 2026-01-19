@@ -212,7 +212,7 @@ class KnowledgeBaseIndexer:
 
             chunks_to_insert = []
             
-            for item in doc.texts():
+            for item in doc.texts:
                 text_content = item.text.strip()
                 if not text_content or len(text_content) < 50: continue 
                 

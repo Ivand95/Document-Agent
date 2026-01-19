@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/usr/src/app  # Mount the current directory into the container
+    ports:
+      - "8000:8000"       # Map port 8000 of the container to port 8000 on the host
+    environment:
+      - PYTHONUNBUFFERED=1 # Ensure Python output is logged in real time
+    command: >
+      /bin/sh -c "source .venv/bin/activate && uv run app/agent.py"
