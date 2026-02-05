@@ -297,8 +297,13 @@ class ChatAgent:
             # but if it's strictly inside a schema, ensure your user has search_path set or function is public.
             # Assuming the SQL function 'match_documents' was created in the schema defined:
             
-            response = self.supabase.rpc(f"match_documents", rpc_params).execute()
+            response = (self.supabase
+                        .schema(self.db_schema)
+                        .rpc("match_documents", rpc_params)
+                        .execute())
+
             return response.data
+
         except Exception as e:
             print(f"Search Error: {e}")
             return []
@@ -307,19 +312,31 @@ class ChatAgent:
         """Constructs a prompt and gets an answer from the LLM."""
         
         # 1. Prepare Context
-        context_text = "\n\n".join([f"SOURCE ({c['metadata']['filename']}): {c['content']}" for c in context_chunks])
+        # We check if we actually have valid context
+        has_context = len(context_chunks) > 0
         
-        system_prompt = """You are a helpful assistant for a company. 
-        Answer the user's question using ONLY the context provided below. 
-        If the answer is not in the context, say "I don't have that information in my documents."
-        Include the source filename in your answer if relevant."""
+        if has_context:
+            context_text = "\n\n".join([f"SOURCE ({c['metadata']['filename']}): {c['content']}" for c in context_chunks])
+        else:
+            context_text = "No specific documents found."
+
+        # 2. System Prompt
+        system_prompt = """You are a helpful, friendly, and professional AI assistant for a company.
+        
+        Guidelines:
+        1. If the user's input is a greeting, small talk, or a general question (like 'How are you?' or 'What is the capital of France?'), answer naturally and amicably without referencing documents.
+        2. If the user asks a specific question about the company, projects, or internal data, use the provided Context to answer.
+        3. If the question requires internal data but the information is NOT in the Context, politely say: "I'm sorry, I couldn't find that specific information in the company documents available to me."
+        4. Always maintain a polite and helpful tone.
+        
+        """
 
         full_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
 
-        # 2. Call LLM
+        # 3. Call LLM
         if LLM_SERVICE == 'openai':
             response = self.chat_client.chat.completions.create(
-                model="gpt-4o", # or gpt-3.5-turbo
+                model="gpt-4o", 
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": full_prompt}
@@ -328,12 +345,12 @@ class ChatAgent:
             return response.choices[0].message.content
             
         elif LLM_SERVICE == 'gemini':
-            # Gemini format
             prompt = f"{system_prompt}\n\n{full_prompt}"
             response = self.chat_model.generate_content(prompt)
             return response.text
             
         return "LLM Service not configured for Chat."
+
 
     def start_chat(self):
         print("\n" + "="*50)
