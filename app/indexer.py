@@ -363,16 +363,17 @@ class ChatAgent:
                 print("Agent: Goodbye!")
                 break
             
-            print("Agent: Thinking...")
             
             # 1. Retrieve
             results = self.search_documents(user_input)
             
-            if not results:
-                print("Agent: I couldn't find any relevant documents in the database.")
-                continue
                 
             # 2. Generate
+            if not results:
+                answer = self.generate_response(user_input, [])
+                print(f"Agent: {answer}")
+                continue
+            
             answer = self.generate_response(user_input, results)
             print(f"Agent: {answer}")
 
