@@ -2,16 +2,24 @@ import os
 import uvicorn
 import logging
 import sys
+import json
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import (
+    FastAPI, 
+    Depends, 
+    HTTPException, 
+    Request, 
+    WebSocket, 
+    WebSocketDisconnect,
+    Query
+)
 from fastapi.security import (
     HTTPAuthorizationCredentials,
-    OAuth2PasswordBearer,
     HTTPBearer,
 )
 from jose import jwt, JWTError
-from datetime import datetime, timedelta
-
+from datetime import datetime, timedelta, timezone
 from auth import exchange_code_for_token, get_user_profile, AUTHORITY, CLIENT_ID
 from agent import app_graph
 
@@ -19,6 +27,15 @@ from models.chat_request import ChatRequest
 
 app = FastAPI()
 load_dotenv()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # JWT Configuration (For session management)
 SECRET_KEY = "your_super_secret_key"
@@ -28,7 +45,7 @@ oauth2_scheme = HTTPBearer()
 
 def create_access_token(data: dict):
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=60)
+    expire = datetime.now(timezone.utc) + timedelta(hours=12)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -53,8 +70,33 @@ def get_current_user_dept(
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
 
-# --- Auth Endpoints ---
+# --- WebSocket Auth Helper ---
+async def get_current_user_dept_ws(
+    websocket: WebSocket,
+    token: str = Query(...)
+):
+    """
+    WebSocket Authentication Dependency.
+    Extracts token from query param ?token=...
+    If authentication fails, closes the WebSocket connection.
+    """
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        department = payload.get("department")
+        if department is None:
+            # We close with a specific policy violation code if auth fails
+            # 1008 is "Policy Violation"
+            await websocket.close(code=1008, reason="Token missing department scope")
+            return None
+        return department
+    except JWTError:
+        await websocket.close(code=1008, reason="Could not validate credentials")
+        return None
 
+
+
+
+# --- Auth Endpoints ---
 
 @app.get("/login")
 def login():
@@ -123,6 +165,95 @@ async def chat_endpoint(
     result = await app_graph.ainvoke(inputs)
 
     return {"response": result["answer"], "department_context_used": department}
+
+
+# --- WebSocket Endpoint ---
+
+@app.websocket("/ws/chat")
+async def websocket_chat(
+    websocket: WebSocket, 
+    token: str = Query(...) # Auth token expected in the query string
+):
+    """
+    WebSocket endpoint for chat.
+    Client connects to: ws://localhost:8000/ws/chat?token=YOUR_JWT_HERE
+    """
+    
+    # 1. Accept Connection & Validate Auth Manually
+    # The `get_current_user_dept_ws` function is used here to perform authentication
+    # and will close the connection if authentication fails.
+    department = await get_current_user_dept_ws(websocket, token)
+    
+    # If department is None, it means the authentication failed and the
+    # WebSocket connection was already closed by `get_current_user_dept_ws`.
+    if not department:
+        return 
+        
+    await websocket.accept() # Accept the connection only after successful authentication
+    print(f"WS Connection accepted for Department: {department}")
+
+    try:
+        while True:
+            # 2. Receive Message from client
+            data = await websocket.receive_text()
+            
+            # (Optional) Attempt to parse the incoming message as JSON,
+            # otherwise treat it as a plain text message.
+            try:
+                message_data = json.loads(data)
+                user_message = message_data.get("message", "")
+                if not user_message:
+                    # If JSON was parsed but 'message' key is missing or empty
+                    await websocket.send_text(json.dumps({"type": "error", "content": "Message content missing in JSON."}))
+                    continue
+            except json.JSONDecodeError:
+                # If it's not valid JSON, treat it as plain text
+                user_message = data
+                if not user_message.strip(): # Check for empty messages
+                    await websocket.send_text(json.dumps({"type": "error", "content": "Empty message received."}))
+                    continue
+            except Exception as e: # Catch other potential issues during parsing
+                await websocket.send_text(json.dumps({"type": "error", "content": f"Failed to process message: {str(e)}"}))
+                continue
+            
+            print(f"Department '{department}' asks: {user_message}")
+
+            # 3. Prepare inputs for your Agent (e.g., LangGraph)
+            inputs = {
+                "question": user_message,
+                "user_department": department,
+            }
+            
+            result = await app_graph.ainvoke(inputs)
+            answer = result.get("answer", "No answer could be generated.") 
+            
+            # 4. Send Response back to the client
+            response_payload = {
+                "type": "answer",
+                "content": answer,
+                "department_context": department,
+                "timestamp": datetime.utcnow().isoformat() + "Z" 
+            }
+            await websocket.send_text(json.dumps(response_payload))
+            
+    except WebSocketDisconnect:
+        # This exception is raised when the client disconnects
+        print(f"Client from Department '{department}' disconnected.")
+    except Exception as e:
+        # Catch any other unexpected errors during the WebSocket session
+        print(f"Unexpected WebSocket error for Department '{department}': {e}")
+        # Attempt to send an error message to the client before potentially closing the connection
+        try:
+            await websocket.send_text(json.dumps({"type": "error", "content": f"An internal server error occurred: {str(e)}"}))
+        except RuntimeError as rt_e:
+            # If the client is already disconnected, send_text might fail
+            print(f"Could not send error message to client: {rt_e}")
+        finally:
+            await websocket.close(code=1011) 
+
+
+
+
 
 
 if __name__ == "__main__":
