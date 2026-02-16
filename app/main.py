@@ -2,9 +2,13 @@ import os
 import uvicorn
 import logging
 import sys
-
+from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, Request
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    OAuth2PasswordBearer,
+    HTTPBearer,
+)
 from jose import jwt, JWTError
 from datetime import datetime, timedelta
 
@@ -14,11 +18,13 @@ from agent import app_graph
 from models.chat_request import ChatRequest
 
 app = FastAPI()
+load_dotenv()
 
 # JWT Configuration (For session management)
 SECRET_KEY = "your_super_secret_key"
 ALGORITHM = "HS256"
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = HTTPBearer()
+
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -26,21 +32,29 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def get_current_user_dept(token: str = Depends(oauth2_scheme)):
+
+def get_current_user_dept(
+    credentials: HTTPAuthorizationCredentials = Depends(oauth2_scheme),
+):
     """
     Decodes the JWT to find the user's department.
     Middleware-like dependency for protected routes.
     """
+    token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         department = payload.get("department")
         if department is None:
-            raise HTTPException(status_code=401, detail="Token missing department scope")
+            raise HTTPException(
+                status_code=401, detail="Token missing department scope"
+            )
         return department
     except JWTError:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
+
 # --- Auth Endpoints ---
+
 
 @app.get("/login")
 def login():
@@ -56,6 +70,7 @@ def login():
     )
     return {"login_url": login_url}
 
+
 @app.get("/auth/callback")
 async def auth_callback(code: str):
     """
@@ -66,60 +81,59 @@ async def auth_callback(code: str):
     # 1. Get MS Token
     ms_token_data = await exchange_code_for_token(code)
     access_token = ms_token_data.get("access_token")
-    
+
     # 2. Get Department from Graph
     user_profile = await get_user_profile(access_token)
-    
+
     # 3. Create Session Token (Embed department here!)
-    session_token = create_access_token({
-        "sub": user_profile.email,
-        "name": user_profile.name,
-        "department": user_profile.department
-    })
-    
+    session_token = create_access_token(
+        {
+            "sub": user_profile.email,
+            "name": user_profile.name,
+            "department": user_profile.department,
+        }
+    )
+
     return {
-        "access_token": session_token, 
+        "access_token": session_token,
         "token_type": "bearer",
-        "user_department": user_profile.department
+        "user_department": user_profile.department,
     }
 
 
 @app.post("/chat")
 async def chat_endpoint(
-    request: ChatRequest, 
-    department: str = Depends(get_current_user_dept)
+    request: ChatRequest, department: str = Depends(get_current_user_dept)
 ):
     """
-    Authorized endpoint. 
+    Authorized endpoint.
     1. Validates JWT.
     2. Extracts Department.
     3. Runs Agent with Department Filter.
     """
-    
+
     print(f"User from Department '{department}' is asking: {request.message}")
-    
+
     inputs = {
         "question": request.message,
-        "user_department": department # Security context injection
-    }
-    
-    # Run the graph
-    result = await app_graph.ainvoke(inputs)
-    
-    return {
-        "response": result["answer"],
-        "department_context_used": department
+        "user_department": department,  # Security context injection
     }
 
+    # Run the graph
+    result = await app_graph.ainvoke(inputs)
+
+    return {"response": result["answer"], "department_context_used": department}
+
+
 if __name__ == "__main__":
-    #logging.info("Starting Uvicorn server on 0.0.0.0:8000")
+    # logging.info("Starting Uvicorn server on 0.0.0.0:8000")
     print("Starting Uvicorn server on 0.0.0.0:8000")
     try:
         uvicorn.run("main:app", host="0.0.0.0", reload=True, port=8000)
     except KeyboardInterrupt:
-        #logging.log_shutdown("Keyboard interrupt received")
+        # logging.log_shutdown("Keyboard interrupt received")
         print("Keyboard interrupt received")
     except Exception as e:
-        #logging.critical(f"Failed to start server: {str(e)}", exc_info=True)
+        # logging.critical(f"Failed to start server: {str(e)}", exc_info=True)
         print(f"Failed to start server: {str(e)}")
         sys.exit(1)
