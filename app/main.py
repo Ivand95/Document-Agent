@@ -1,4 +1,8 @@
 import os
+import uvicorn
+import logging
+import sys
+
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
@@ -106,3 +110,16 @@ async def chat_endpoint(
         "response": result["answer"],
         "department_context_used": department
     }
+
+if __name__ == "__main__":
+    #logging.info("Starting Uvicorn server on 0.0.0.0:8000")
+    print("Starting Uvicorn server on 0.0.0.0:8000")
+    try:
+        uvicorn.run("main:app", host="0.0.0.0", reload=True, port=8000)
+    except KeyboardInterrupt:
+        #logging.log_shutdown("Keyboard interrupt received")
+        print("Keyboard interrupt received")
+    except Exception as e:
+        #logging.critical(f"Failed to start server: {str(e)}", exc_info=True)
+        print(f"Failed to start server: {str(e)}")
+        sys.exit(1)
