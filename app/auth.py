@@ -4,14 +4,13 @@ from fastapi import HTTPException
 from models.user_profile import UserProfile
 
 # Azure Configuration
-CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
-CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
-TENANT_ID = os.getenv("AZURE_TENANT_ID")
-REDIRECT_URI = "http://localhost:8000/auth/callback" # Update for production
+CLIENT_ID = os.getenv("OFFICE_365_CLIENT_ID")
+CLIENT_SECRET = os.getenv("OFFICE_365_CLIENT_SECRET")
+TENANT_ID = os.getenv("OFFICE_365_TENANT_ID")
+REDIRECT_URI = "http://localhost:8000/auth/callback"  # Update for production
 
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0/me?$select=displayName,mail,department,jobTitle"
-
+GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,department,jobTitle"
 
 
 async def exchange_code_for_token(code: str):
@@ -27,8 +26,11 @@ async def exchange_code_for_token(code: str):
         }
         resp = await client.post(f"{AUTHORITY}/oauth2/v2.0/token", data=data)
         if resp.status_code != 200:
-            raise HTTPException(status_code=400, detail="Failed to retrieve token from Microsoft")
+            raise HTTPException(
+                status_code=400, detail="Failed to retrieve token from Microsoft"
+            )
         return resp.json()
+
 
 async def get_user_profile(access_token: str) -> UserProfile:
     """Fetches user details and DEPARTMENT from MS Graph."""
@@ -38,13 +40,14 @@ async def get_user_profile(access_token: str) -> UserProfile:
         resp = await client.get(GRAPH_ENDPOINT, headers=headers)
         if resp.status_code != 200:
             raise HTTPException(status_code=401, detail="Failed to fetch user profile")
-        
+
+        print("User profile: ", resp.json())
         data = resp.json()
-        
+
         return UserProfile(
             id=data.get("id"),
             name=data.get("displayName"),
             email=data.get("mail") or data.get("userPrincipalName"),
             # Ensure your SharePoint/AD actually has this field populated
-            department=data.get("department")
+            department=data.get("department"),
         )
