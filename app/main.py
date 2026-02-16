@@ -3,7 +3,7 @@ import uvicorn
 import logging
 import sys
 import json
-
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from fastapi import (
     FastAPI, 
@@ -27,6 +27,15 @@ from models.chat_request import ChatRequest
 
 app = FastAPI()
 load_dotenv()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # JWT Configuration (For session management)
 SECRET_KEY = "your_super_secret_key"
