@@ -5,15 +5,18 @@ import sys
 import json
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, Request
-from fastapi.security import (
-    HTTPAuthorizationCredentials,
-    OAuth2PasswordBearer,
-    HTTPBearer,
+from fastapi import (
+    FastAPI, 
+    Depends, 
+    HTTPException, 
     Request, 
     WebSocket, 
     WebSocketDisconnect,
     Query
+)
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
 )
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
