@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
-import { AutoAwesome, Visibility, VisibilityOff } from '@mui/icons-material'
-import { CircularProgress, IconButton, InputAdornment, TextField } from '@mui/material'
+import { AutoAwesome, Microsoft, Visibility, VisibilityOff } from '@mui/icons-material'
+import { Button, CircularProgress, IconButton, InputAdornment, TextField } from '@mui/material'
+import { login } from '../utils/axios'
 import './style.css'
 
 export const Login = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserInfo) => void }) => {
@@ -18,13 +19,73 @@ export const Login = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserI
         if (email === 'juan.niemen@gmail.com' && password === '123456') {
             await new Promise((resolve) => setTimeout(() => {
                 setLoading(false)
-                props.setUserInfo({ id: crypto.randomUUID(), name: 'Juan Niemen', email: 'juan.niemen@gmail.com', department: 'General' })
+                props.setUserInfo({ access_token: '1234567890', name: 'Juan Niemen', email: 'juan.niemen@gmail.com', department: 'General' })
                 navigate('/chat', { replace: true })
                 resolve(true)
             }, 2000))
         } else {
             setLoading(false)
             setError('Correo electrónico o contraseña incorrectos')
+        }
+    }
+
+    const handleLoginWithMicrosoft = async () => {
+        try {
+            const response = await login()
+            if (response.status !== 200) return
+
+            const width = 500
+            const height = 700
+            const left = window.screenX + (window.outerWidth - width) / 2
+            const top = window.screenY + (window.outerHeight - height) / 2
+
+            const popup = window.open(
+                response.data.login_url,
+                'microsoft-login',
+                `width=${width},height=${height},left=${left},top=${top},popup=yes`
+            )
+
+            if (!popup) {
+                setError('El navegador bloqueó la ventana emergente. Permite popups e intenta de nuevo.')
+                return
+            }
+
+            setLoading(true)
+
+            const onMessage = (event: MessageEvent) => {
+                if (event.origin !== import.meta.env.VITE_BACKEND_URL) return
+                if (event.data?.type !== 'ms-auth-callback') return
+
+                window.removeEventListener('message', onMessage)
+                setLoading(false)
+
+                if (event.data.error) {
+                    setError(event.data.error)
+                    return
+                }
+
+                props.setUserInfo({
+                    access_token: event.data.access_token,
+                    name: event.data.name,
+                    email: event.data.email,
+                    department: event.data.department,
+                })
+                navigate('/chat', { replace: true })
+            }
+
+            window.addEventListener('message', onMessage)
+
+            const pollTimer = setInterval(() => {
+                if (popup.closed) {
+                    clearInterval(pollTimer)
+                    window.removeEventListener('message', onMessage)
+                    setLoading(false)
+                }
+            }, 500)
+        } catch (error) {
+            console.error(error)
+            setLoading(false)
+            setError('Error al iniciar sesión con Microsoft')
         }
     }
 
@@ -110,9 +171,26 @@ export const Login = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserI
                             },
                         }}
                     />
-                    <button type="submit" className="login-submit" disabled={loading}>
+                    <button type="submit" className="login-button" disabled={loading} style={{
+                        color: '#fff',
+                        background: 'linear-gradient(135deg, var(--login-accent) 0%, var(--login-accent-hover) 100%)'
+                    }}>
                         {loading ? <CircularProgress size={20} sx={{ color: 'var(--login-text)' }} /> : 'Iniciar sesión'}
                     </button>
+                    <Button
+                        classes={{ root: 'login-button' }}
+                        fullWidth
+                        startIcon={<Microsoft />}
+                        onClick={() => {
+                            handleLoginWithMicrosoft()
+                        }}
+                        sx={{
+                            backgroundColor: 'var(--login-text)',
+                            color: 'var(--login-surface)',
+                        }}
+                    >
+                        Iniciar sesión con Microsoft
+                    </Button>
                     {error && <p className="login-error">{error}</p>}
                 </form>
 
@@ -120,6 +198,6 @@ export const Login = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserI
                     Asistente inteligente de documentación para <br /> <span className="login-hint-cooperativa">Cooperativa Barcelona</span>.
                 </p>
             </div>
-        </div>
+        </div >
     )
 }

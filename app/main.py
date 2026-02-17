@@ -14,6 +14,7 @@ from fastapi import (
     WebSocketDisconnect,
     Query
 )
+from fastapi.responses import HTMLResponse
 from fastapi.security import (
     HTTPAuthorizationCredentials,
     HTTPBearer,
@@ -113,34 +114,56 @@ def login():
     return {"login_url": login_url}
 
 
-@app.get("/auth/callback")
+@app.get("/auth/callback", response_class=HTMLResponse)
 async def auth_callback(code: str):
     """
     1. Exchange code for MS Graph Token
     2. Get User Profile (Department)
     3. Mint internal JWT with department
+    4. Return HTML that sends data to the opener window via postMessage
     """
-    # 1. Get MS Token
-    ms_token_data = await exchange_code_for_token(code)
-    access_token = ms_token_data.get("access_token")
+    try:
+        ms_token_data = await exchange_code_for_token(code)
+        access_token = ms_token_data.get("access_token")
 
-    # 2. Get Department from Graph
-    user_profile = await get_user_profile(access_token)
+        user_profile = await get_user_profile(access_token)
 
-    # 3. Create Session Token (Embed department here!)
-    session_token = create_access_token(
-        {
-            "sub": user_profile.email,
+        session_token = create_access_token(
+            {
+                "sub": user_profile.email,
+                "name": user_profile.name,
+                "department": user_profile.department,
+            }
+        )
+
+        payload = json.dumps({
+            "type": "ms-auth-callback",
+            "access_token": session_token,
             "name": user_profile.name,
+            "email": user_profile.email,
             "department": user_profile.department,
-        }
-    )
+        })
+    except Exception as e:
+        payload = json.dumps({
+            "type": "ms-auth-callback",
+            "error": str(e),
+        })
 
-    return {
-        "access_token": session_token,
-        "token_type": "bearer",
-        "user_department": user_profile.department,
-    }
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Autenticación completada</title></head>
+    <body>
+        <p>Autenticación completada. Esta ventana se cerrará automáticamente.</p>
+        <script>
+            if (window.opener) {{
+                window.opener.postMessage({payload}, "*");
+            }}
+            window.close();
+        </script>
+    </body>
+    </html>
+    """
 
 
 @app.post("/chat")

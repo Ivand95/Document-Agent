@@ -1,5 +1,5 @@
 interface UserInfo {
-  id: string
+  access_token: string
   name: string
   email: string
   department: string

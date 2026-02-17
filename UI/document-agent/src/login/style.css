@@ -118,37 +118,33 @@
   --login-radius: 10px;
 }
 
-.login-submit {
-  margin-top: 8px;
-  padding: 14px 24px;
-  font-size: 1rem;
-  font-weight: 600;
-  font-family: inherit;
-  color: #fff;
-  background: linear-gradient(
-    135deg,
-    var(--login-accent) 0%,
-    var(--login-accent-hover) 100%
-  );
-  border: none;
-  border-radius: var(--login-radius);
-  cursor: pointer;
+.login-button {
+  margin-top: 8px !important;
+  padding: 14px 24px !important;
+  font-size: 1rem !important;
+  font-weight: 600 !important;
+  font-family: inherit !important;
+  text-transform: none !important;
+  border: none !important;
+  border-radius: var(--login-radius) !important;
+  cursor: pointer !important;
   transition:
     transform 0.15s,
-    box-shadow 0.2s;
+    box-shadow 0.2s !important;
   box-shadow: 0 4px 16px rgba(95, 124, 58, 0.35);
+  max-height: 50px;
 }
 
-.login-submit:hover {
+.login-button:hover {
   transform: translateY(-1px);
   box-shadow: 0 6px 24px rgba(95, 124, 58, 0.4);
 }
 
-.login-submit:active {
+.login-button:active {
   transform: translateY(0);
 }
 
-.login-submit:focus-visible {
+.login-button:focus-visible {
   outline: 2px solid var(--login-accent);
   outline-offset: 2px;
 }

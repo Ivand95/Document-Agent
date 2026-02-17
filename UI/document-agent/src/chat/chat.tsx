@@ -14,7 +14,7 @@ interface Message {
 }
 
 interface UserInfo {
-    id: string
+    access_token: string
     name: string
     email: string
     department: string
@@ -99,7 +99,7 @@ export const Chat = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserIn
 
     const handleLogout = () => {
         navigate('/', { replace: true })
-        props.setUserInfo({ id: '', name: '', email: '', department: '' })
+        props.setUserInfo({ access_token: '', name: '', email: '', department: '' })
     }
 
     const handleOpenUserMenu = () => {
