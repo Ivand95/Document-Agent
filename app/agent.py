@@ -11,6 +11,7 @@ from supabase.client import create_client, Client
 
 from langgraph.graph import StateGraph, END
 from indexer import ChatAgent
+from config import global_supabase_client, global_embedding_service_instance, SUPABASE_SCHEMA
 
 
 load_dotenv()
@@ -41,45 +42,54 @@ class AgentState(TypedDict):
     context: List[Document]
     answer: str
 
+# --- Initialize ChatAgent ---
+global_chat_agent_for_graph = ChatAgent()
+
 # --- Nodes ---
 
 def custom_supabase_search(query_text: str, department_filter: str, k: int = 4):
-    """
-    Directly calls the Supabase RPC function to bypass LangChain's
-    SyncRPCFilterRequestBuilder error.
-    """
+    print(f"DEBUG: custom_supabase_search called with query='{query_text}', department='{department_filter}'")
     
-    # 1. Generate Embedding
-    # Use your existing embedding model instance
-    query_vector = embeddings.embed_query(query_text)
+    # 1. Generate Embedding using the global instance
+    query_vector = global_embedding_service_instance.get_embedding(query_text)
+    
+    if query_vector is None:
+        print("ERROR: Failed to generate embedding for query. Returning empty documents.")
+        return []
 
-    # 2. Prepare RPC Parameters
-    # These keys MUST match the arguments defined in your SQL function 'match_documents'
+    # 2. Prepare RPC Parameters (still assuming the SQL uses `filter jsonb`)
     rpc_params = {
         "query_embedding": query_vector,
-        "match_threshold": 0.5,  # Adjust sensitivity
+        "match_threshold": 0.5,
         "match_count": k,
-        "filter": {"category": department_filter} # Passing the JSON filter directly
+        "filter": {"category": department_filter}
     }
 
     try:
-        # 3. Execute RPC Call (The stable way)
-        response = supabase.rpc("match_documents", rpc_params).execute()
+        # 3. Execute RPC Call using the global client and explicit schema
+        response = (global_supabase_client
+                    .schema(SUPABASE_SCHEMA) # Explicitly use the configured schema
+                    .rpc("match_documents", rpc_params)
+                    .execute())
         
-        # 4. Convert Supabase response to LangChain Documents
+        print(f"DEBUG: Supabase RPC response data length: {len(response.data)}")
+        if not response.data:
+            print("DEBUG: No documents returned from Supabase RPC.")
+
+        # 4. Convert Supabase response dictionaries to LangChain Document objects
         documents = []
         for record in response.data:
-            # Handle potential missing keys gracefully
             content = record.get("content", "")
             metadata = record.get("metadata", {})
             
             doc = Document(page_content=content, metadata=metadata)
             documents.append(doc)
-            
+        
+        print(f"DEBUG: Converted {len(documents)} documents to LangChain Document objects.")
         return documents
 
     except Exception as e:
-        print(f"Supabase Search Error: {e}")
+        print(f"Supabase Search Error in custom_supabase_search: {e}")
         return []
 
 def retrieve_documents(state: AgentState):
@@ -102,27 +112,18 @@ def retrieve_documents(state: AgentState):
 
 def generate_answer(state: AgentState):
     """
-    Generates answer using retrieved context.
+    Generates answer using retrieved context by leveraging the ChatAgent's logic.
     """
-    llm = ChatOpenAI(model="gpt-4o", temperature=0)
+    print("--- GENERATING ANSWER ---")
     
-    docs_content = "\n\n".join([d.page_content for d in state["context"]])
-    
-    system_prompt = f"""You are a helpful assistant for the {state['user_department']} department.
-    Use the following context to answer the user's question.
-    
-    Context:
-    {docs_content}
-    """
-    
-    messages = [
-        ("system", system_prompt),
-        ("user", state["question"])
-    ]
-    
-    response = llm.invoke(messages)
-    return {"answer": response.content}
+    question = state["question"]
+    context_documents = state["context"] # This is already a list of Document objects
 
+    answer_content = global_chat_agent_for_graph.generate_response(question, context_documents)
+    
+    print(f"Generated answer: {answer_content[:100]}...") # Print first 100 chars
+    
+    return {"answer": answer_content}
 # --- Graph Construction ---
 
 workflow = StateGraph(AgentState)

@@ -13,60 +13,10 @@ from docling.chunking import HybridChunker  # specific docling chunker
 import openai
 import google.generativeai as genai
 
+from langchain_core.documents import Document
+from config import global_supabase_client, global_embedding_service_instance, SUPABASE_SCHEMA, SUPABASE_KEY, SUPABASE_URL, LLM_SERVICE, LLM_API_KEY
+
 load_dotenv()
-
-# --- Configuration ---
-LLM_SERVICE = os.getenv('LLM_SERVICE', 'openai').lower()
-LLM_API_KEY = os.getenv('LLM_SERVICE_API_KEY')
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY') # Service role key preferred for writing
-SUPABASE_SCHEMA = os.getenv('SUPABASE_SCHEMA', 'public') # Default to public if not set
-SUPABASE_TABLE = os.getenv('SUPABASE_TABLE', 'documents') # Default to documents if not set
-
-# --- Helper: Embedding Generator Factory ---
-class EmbeddingService:
-    def __init__(self):
-        self.service = LLM_SERVICE
-        self.api_key = LLM_API_KEY
-        
-        if self.service == 'openai':
-            self.client = openai.OpenAI(api_key=self.api_key)
-        elif self.service == 'gemini':
-            genai.configure(api_key=self.api_key)
-        
-    def get_embedding(self, text):
-        """Generates embedding vector based on selected service."""
-        text = text.replace("\n", " ") # Normalize
-        
-        try:
-            if self.service == 'openai':
-                response = self.client.embeddings.create(
-                    input=[text], model="text-embedding-3-small"
-                )
-                return response.data[0].embedding
-            
-            elif self.service == 'gemini':
-                # 'models/embedding-001' is standard for Gemini
-                result = genai.embed_content(
-                    model="models/embedding-001",
-                    content=text,
-                    task_type="retrieval_document"
-                )
-                return result['embedding']
-            
-            elif self.service == 'huggingface':
-                # Using HF Inference API
-                api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
-                headers = {"Authorization": f"Bearer {self.api_key}"}
-                response = requests.post(api_url, headers=headers, json={"inputs": text, "options": {"wait_for_model": True}})
-                return response.json()
-            
-            else:
-                raise ValueError("Unsupported LLM_SERVICE")
-                
-        except Exception as e:
-            print(f"Error generating embedding: {e}")
-            return None
 
 # --- Part 1: SharePoint Sync (Updated) ---
 class SharePointSync:
@@ -267,8 +217,8 @@ class KnowledgeBaseIndexer:
 # --- Part 3: Interactive Chat Agent (New) ---
 class ChatAgent:
     def __init__(self):
-        self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        self.embedder = EmbeddingService()
+        self.supabase: Client = global_supabase_client
+        self.embedder = global_embedding_service_instance
         self.db_schema = SUPABASE_SCHEMA
         
         # Configure the LLM for chat generation
@@ -308,15 +258,30 @@ class ChatAgent:
             print(f"Search Error: {e}")
             return []
 
+
     def generate_response(self, query, context_chunks):
         """Constructs a prompt and gets an answer from the LLM."""
         
-        # 1. Prepare Context
-        # We check if we actually have valid context
-        has_context = len(context_chunks) > 0
+        # 1. Prepare Context - This section is the critical fix
+        processed_context_chunks = []
+        for chunk in context_chunks:
+            if isinstance(chunk, Document):
+                # Convert Document object back to a dictionary format expected by the join
+                processed_context_chunks.append({
+                    "content": chunk.page_content,
+                    "metadata": chunk.metadata
+                })
+            else:
+                # If a dictionary somehow comes through (e.g., from old console path), use it as is
+                processed_context_chunks.append(chunk)
+
+        has_context = len(processed_context_chunks) > 0
         
         if has_context:
-            context_text = "\n\n".join([f"SOURCE ({c['metadata']['filename']}): {c['content']}" for c in context_chunks])
+            context_text = "\n\n".join([
+                f"SOURCE ({c['metadata'].get('filename', 'Unknown') }): {c['content']}" 
+                for c in processed_context_chunks
+            ])
         else:
             context_text = "No specific documents found."
 
@@ -335,6 +300,7 @@ class ChatAgent:
 
         # 3. Call LLM
         if LLM_SERVICE == 'openai':
+            # Ensure self.chat_client is initialized, which it should be via __init__
             response = self.chat_client.chat.completions.create(
                 model="gpt-4o", 
                 messages=[
@@ -345,12 +311,13 @@ class ChatAgent:
             return response.choices[0].message.content
             
         elif LLM_SERVICE == 'gemini':
+            # Ensure self.chat_model is initialized
             prompt = f"{system_prompt}\n\n{full_prompt}"
             response = self.chat_model.generate_content(prompt)
             return response.text
             
         return "LLM Service not configured for Chat."
-
+    
 
     def start_chat(self):
         print("\n" + "="*50)
