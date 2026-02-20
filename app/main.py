@@ -199,7 +199,7 @@ async def websocket_chat(
 ):
     """
     WebSocket endpoint for chat.
-    Client connects to: ws://localhost:8000/ws/chat?token=YOUR_JWT_HERE
+    Client connects to: ws://localhost:8000/ws/chat?token=YOUR_JWT_HERE (ws://127.0.0.1:8000/ws/chat?token=YOUR_JWT_HERE if using IPV6 addresses)
     """
     
     # 1. Accept Connection & Validate Auth Manually

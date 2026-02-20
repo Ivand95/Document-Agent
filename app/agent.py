@@ -43,6 +43,45 @@ class AgentState(TypedDict):
 
 # --- Nodes ---
 
+def custom_supabase_search(query_text: str, department_filter: str, k: int = 4):
+    """
+    Directly calls the Supabase RPC function to bypass LangChain's
+    SyncRPCFilterRequestBuilder error.
+    """
+    
+    # 1. Generate Embedding
+    # Use your existing embedding model instance
+    query_vector = embeddings.embed_query(query_text)
+
+    # 2. Prepare RPC Parameters
+    # These keys MUST match the arguments defined in your SQL function 'match_documents'
+    rpc_params = {
+        "query_embedding": query_vector,
+        "match_threshold": 0.5,  # Adjust sensitivity
+        "match_count": k,
+        "filter": {"category": department_filter} # Passing the JSON filter directly
+    }
+
+    try:
+        # 3. Execute RPC Call (The stable way)
+        response = supabase.rpc("match_documents", rpc_params).execute()
+        
+        # 4. Convert Supabase response to LangChain Documents
+        documents = []
+        for record in response.data:
+            # Handle potential missing keys gracefully
+            content = record.get("content", "")
+            metadata = record.get("metadata", {})
+            
+            doc = Document(page_content=content, metadata=metadata)
+            documents.append(doc)
+            
+        return documents
+
+    except Exception as e:
+        print(f"Supabase Search Error: {e}")
+        return []
+
 def retrieve_documents(state: AgentState):
     """
     Retrieves documents filtering by the user's department.
@@ -57,11 +96,7 @@ def retrieve_documents(state: AgentState):
     filters = {"category": department, "category": "General", "category": "OTROS"}
     
     # Perform similarity search with filter
-    docs = vector_store.similarity_search(
-        question, 
-        k=4, 
-        filter=filters
-    )
+    docs = custom_supabase_search(question, department, 4)
     
     return {"context": docs}
 
