@@ -1,0 +1,40 @@
+# Config
+.venv
+node_modules
+.env
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# UI/document-agent
+UI/document-agent/node_modules
+UI/document-agent/dist
+UI/document-agent/dist-ssr
+UI/document-agent/*.local
+UI/document-agent/.vscode/*
+UI/document-agent/.idea
+UI/document-agent/.DS_Store
+UI/document-agent/*.suo
+UI/document-agent/*.ntvs*
+UI/document-agent/*.njsproj
