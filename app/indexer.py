@@ -136,8 +136,14 @@ class KnowledgeBaseIndexer:
         """Extracts the subfolder structure relative to root_dir."""
         try:
             relative_path = file_path.relative_to(self.root_dir)
-            parent = relative_path.parent
-            return str(parent) if str(parent) != "." else "Uncategorized"
+            
+            # Check if the file is directly in the root directory
+            if str(relative_path.parent) == ".":
+                return "Uncategorized"
+            
+            # Extract the first part of the path (the top-level folder)
+            return relative_path.parts[0]
+            
         except ValueError:
             return "External"
 
