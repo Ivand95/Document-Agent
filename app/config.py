@@ -15,6 +15,19 @@ SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 SUPABASE_SCHEMA = os.getenv('SUPABASE_SCHEMA', 'public')
 SUPABASE_TABLE = os.getenv('SUPABASE_TABLE', 'documents')
 
+DEPARTMENT_LIST = {
+    "Gestion Humana": "HR",
+    "Tecnología": "IT",
+    "Contabilidad": "FI",
+    "Administrativo": "ADM",
+    "Cumplimiento": "CU",
+    "Marketing": "MKT",
+    "Comercial": "COM",
+    "Creditos y Cobros": "CC",
+    "Atencion al Socio": "COM",
+    "Auditoria": "AUD",
+}
+
 
 # --- Helper: Embedding Generator Factory (from your initial script) ---
 class EmbeddingService:
@@ -47,6 +60,14 @@ class EmbeddingService:
         except Exception as e:
             print(f"Error generating embedding: {e}")
             return None
+
+# --- Helper: Department List Dictionary ---
+
+def get_department_categories(department: str) -> list[str]:
+    if department not in DEPARTMENT_LIST:
+        return ["OTROS"]
+    return [DEPARTMENT_LIST[department], "OTROS"]
+    
 
 # --- Initialize Global Supabase Client and Embedder Instance ---
 # These will be used by your `custom_supabase_search` function
