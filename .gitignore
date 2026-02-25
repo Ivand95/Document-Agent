@@ -40,3 +40,5 @@ UI/document-agent/.DS_Store
 UI/document-agent/*.suo
 UI/document-agent/*.ntvs*
 UI/document-agent/*.njsproj
+
+**/__pycache__/*
