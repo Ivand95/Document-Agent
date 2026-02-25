@@ -11,7 +11,7 @@ from supabase.client import create_client, Client
 
 from langgraph.graph import StateGraph, END
 from indexer import ChatAgent
-from config import global_supabase_client, global_embedding_service_instance, SUPABASE_SCHEMA
+from config import global_supabase_client, global_embedding_service_instance, SUPABASE_SCHEMA, get_department_categories
 
 
 load_dotenv()
@@ -47,7 +47,7 @@ global_chat_agent_for_graph = ChatAgent()
 
 # --- Nodes ---
 
-def custom_supabase_search(query_text: str, department_filter: str, k: int = 4):
+def custom_supabase_search(query_text: str, department_filter: list[str], k: int = 4):
     print(f"DEBUG: custom_supabase_search called with query='{query_text}', department='{department_filter}'")
     
     # 1. Generate Embedding using the global instance
@@ -62,7 +62,7 @@ def custom_supabase_search(query_text: str, department_filter: str, k: int = 4):
         "query_embedding": query_vector,
         "match_threshold": 0.5,
         "match_count": k,
-        "filter": {"category": department_filter}
+        "allowed_categories": department_filter
     }
 
     try:
@@ -102,11 +102,11 @@ def retrieve_documents(state: AgentState):
     print(f"--- Retrieving for Department: {department} ---")
     
     # METADATA FILTERING
-    # This assumes your vector metadata looks like: {"department": "HR", "source": "..."}
-    filters = {"category": department, "category": "General", "category": "OTROS"}
+    # This assumes your vector metadata looks like: {"category": "HR", "source": "..."}
+    filters = get_department_categories(department)
     
     # Perform similarity search with filter
-    docs = custom_supabase_search(question, department, 4)
+    docs = custom_supabase_search(question, filters, 4)
     
     return {"context": docs}
 
