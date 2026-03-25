@@ -34,8 +34,6 @@ function App() {
     }
   }, [userInfo])
 
-  console.log(userInfo)
-
   const router = createBrowserRouter([
     {
       path: '/',

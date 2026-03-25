@@ -3,6 +3,9 @@ import './style.css'
 import { ArrowDownward, AutoAwesome, Logout, Send } from '@mui/icons-material'
 import { Avatar, Button, CircularProgress, IconButton } from '@mui/material'
 import { useNavigate } from 'react-router'
+import { chatWebSocket } from '../utils/axios'
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 type MessageRole = 'user' | 'assistant'
 
@@ -30,6 +33,24 @@ export const Chat = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserIn
     const [thinking, setThinking] = useState(false)
     const [openUserMenu, setOpenUserMenu] = useState(false)
     const navigate = useNavigate()
+    const [wsConnected, setWsConnected] = useState(false)
+    const wsRef = useRef<WebSocket>(null)
+
+    useEffect(() => {
+        if (!wsRef.current) {
+            wsRef.current = chatWebSocket(props.userInfo.access_token)
+            wsRef.current.onopen = () => {
+                setWsConnected(true)
+            }
+            wsRef.current.onclose = () => {
+                setWsConnected(false)
+            }
+            wsRef.current.onerror = (error: Event) => {
+                console.error('WebSocket error', error)
+                setWsConnected(false)
+            }
+        }
+    }, [props.userInfo.access_token, wsRef.current])
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -48,6 +69,18 @@ export const Chat = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserIn
     }
 
     useEffect(() => {
+        if (wsConnected && wsRef.current) {
+            wsRef.current.onmessage = (event: MessageEvent) => {
+                const data = JSON.parse(event.data)
+                if (data.type === 'answer' || data.type === 'error') {
+                    setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: data.content, timestamp: new Date() }])
+                    setThinking(false)
+                }
+            }
+        }
+    }, [wsConnected])
+
+    useEffect(() => {
         scrollToBottom()
     }, [messages])
 
@@ -60,34 +93,13 @@ export const Chat = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserIn
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
-        const trimmed = input.trim()
-        if (!trimmed) return
-
-        const userMessage: Message = {
-            id: crypto.randomUUID(),
-            role: 'user',
-            content: trimmed,
-            timestamp: new Date(),
+        setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'user', content: input, timestamp: new Date() }])
+        if (wsRef.current) {
+            wsRef.current.send(input)
+            setInput('')
+            textareaRef.current?.focus()
+            setThinking(true)
         }
-        setMessages((prev) => [...prev, userMessage])
-        setThinking(true)
-        setInput('')
-        textareaRef.current?.focus()
-
-        // Placeholder: respuesta del agente (simulada)
-        await new Promise((resolve) => setTimeout(() => {
-            setThinking(false)
-            resolve(true)
-        }, 1600)).then(() => {
-            const assistantMessage: Message = {
-                id: crypto.randomUUID(),
-                role: 'assistant',
-                content: 'He recibido tu mensaje. Aquí irá la respuesta del agente cuando esté conectado al backend.',
-                timestamp: new Date(),
-            }
-            setMessages((prev) => [...prev, assistantMessage])
-            scrollToBottom()
-        })
     }
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -223,7 +235,11 @@ export const Chat = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserIn
                                         </div>
                                     )}
                                     <div className="chat-message-bubble">
-                                        <p className="chat-message-content">{msg.content}</p>
+                                        <div className="chat-message-content">
+                                            <Markdown remarkPlugins={[remarkGfm]}>
+                                                {msg.content}
+                                            </Markdown>
+                                        </div>
                                         <time
                                             className="chat-message-time"
                                             dateTime={msg.timestamp.toISOString()}
