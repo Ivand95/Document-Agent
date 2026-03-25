@@ -3,6 +3,8 @@ import uvicorn
 import logging
 import sys
 import json
+import uuid
+
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from fastapi import (
@@ -206,14 +208,13 @@ async def websocket_chat(
     # The `get_current_user_dept_ws` function is used here to perform authentication
     # and will close the connection if authentication fails.
     department = await get_current_user_dept_ws(websocket, token)
-    
-    # If department is None, it means the authentication failed and the
-    # WebSocket connection was already closed by `get_current_user_dept_ws`.
-    if not department:
-        return 
+    if not department: return 
         
-    await websocket.accept() # Accept the connection only after successful authentication
-    print(f"WS Connection accepted for Department: {department}")
+    await websocket.accept()
+    
+    # 1. CREATE A UNIQUE ID FOR THIS SPECIFIC CHAT SESSION
+    session_id = str(uuid.uuid4())
+    print(f"WS Connection accepted for Department: {department} (Session: {session_id})")
 
     try:
         while True:
@@ -246,8 +247,12 @@ async def websocket_chat(
                 "question": user_message,
                 "user_department": department,
             }
+
+            # Pass the session id to LangGraph
+            # This tells LangGraph to isolate this conversation's state
+            config = {"configurable": {"thread_id": session_id}}
             
-            result = await app_graph.ainvoke(inputs)
+            result = await app_graph.ainvoke(inputs, config=config)
             answer = result.get("answer", "No answer could be generated.") 
             
             # 4. Send Response back to the client
@@ -261,10 +266,10 @@ async def websocket_chat(
             
     except WebSocketDisconnect:
         # This exception is raised when the client disconnects
-        print(f"Client from Department '{department}' disconnected.")
+        print(f"Client from Department '{department}' disconnected. Session ID: {session_id}")
     except Exception as e:
         # Catch any other unexpected errors during the WebSocket session
-        print(f"Unexpected WebSocket error for Department '{department}': {e}")
+        print(f"Unexpected WebSocket error for Department '{department}': {e}. Session ID: {session_id}")
         # Attempt to send an error message to the client before potentially closing the connection
         try:
             await websocket.send_text(json.dumps({"type": "error", "content": f"An internal server error occurred: {str(e)}"}))

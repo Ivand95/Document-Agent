@@ -1,5 +1,6 @@
 import os
 import sys
+import asyncio
 from typing import Annotated, List, Dict
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
@@ -142,7 +143,7 @@ app_graph = workflow.compile()
 if __name__ == "__main__":
     try:
         agent = ChatAgent()
-        agent.start_chat()
+        asyncio.run(agent.start_chat())
     except KeyboardInterrupt:
         print("\nAgent: Goodbye! (Interrupted)")
         sys.exit(0)

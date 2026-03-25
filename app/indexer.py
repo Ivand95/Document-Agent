@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import msal
+import asyncio
 import dateutil.parser
 from pathlib import Path
 from dotenv import load_dotenv
@@ -14,7 +15,7 @@ import openai
 import google.generativeai as genai
 
 from langchain_core.documents import Document
-from config import global_supabase_client, global_embedding_service_instance, SUPABASE_SCHEMA, SUPABASE_KEY, SUPABASE_URL, LLM_SERVICE, LLM_API_KEY
+from config import global_supabase_client, global_embedding_service_instance, SUPABASE_SCHEMA, SUPABASE_KEY, SUPABASE_URL, LLM_SERVICE, LLM_API_KEY, SUPABASE_TABLE
 
 load_dotenv()
 
@@ -125,7 +126,7 @@ class KnowledgeBaseIndexer:
     def __init__(self, root_dir):
         self.root_dir = root_dir
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        self.embedder = EmbeddingService()
+        self.embedder = global_embedding_service_instance
         self.converter = DocumentConverter()
         
         # Load schema/table config
@@ -265,7 +266,7 @@ class ChatAgent:
             return []
 
 
-    def generate_response(self, query, context_chunks):
+    async def generate_response(self, query, context_chunks):
         """Constructs a prompt and gets an answer from the LLM."""
         
         # 1. Prepare Context - This section is the critical fix
@@ -306,8 +307,9 @@ class ChatAgent:
 
         # 3. Call LLM
         if LLM_SERVICE == 'openai':
-            # Ensure self.chat_client is initialized, which it should be via __init__
-            response = self.chat_client.chat.completions.create(
+            # Run the asynchronous OpenAI call in a background thread
+            response = await asyncio.to_thread(
+                self.chat_client.chat.completions.create,
                 model="gpt-4o", 
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -317,15 +319,18 @@ class ChatAgent:
             return response.choices[0].message.content
             
         elif LLM_SERVICE == 'gemini':
-            # Ensure self.chat_model is initialized
+            # Run the asynchronous Gemini call in a background thread
             prompt = f"{system_prompt}\n\n{full_prompt}"
-            response = self.chat_model.generate_content(prompt)
+            response = await asyncio.to_thread(
+                self.chat_model.generate_content,
+                prompt
+            )
             return response.text
             
         return "LLM Service not configured for Chat."
     
 
-    def start_chat(self):
+    async def start_chat(self):
         print("\n" + "="*50)
         print("SharePoint Agent Ready. Type 'exit' or 'quit' to stop.")
         print("="*50)
@@ -343,11 +348,11 @@ class ChatAgent:
                 
             # 2. Generate
             if not results:
-                answer = self.generate_response(user_input, [])
+                answer = await self.generate_response(user_input, [])
                 print(f"Agent: {answer}")
                 continue
             
-            answer = self.generate_response(user_input, results)
+            answer = await self.generate_response(user_input, results)
             print(f"Agent: {answer}")
 
 
