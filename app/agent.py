@@ -73,12 +73,19 @@ def custom_supabase_search(query_text: str, department_filter: list[str], k: int
         return []
 
     # 2. Prepare RPC Parameters (still assuming the SQL uses `filter jsonb`)
-    rpc_params = {
+    if department_filter != []:
+        rpc_params = {
         "query_embedding": query_vector,
         "match_threshold": 0.5,
         "match_count": k,
         "allowed_categories": department_filter,
-    }
+        }
+    else:
+        rpc_params = {
+        "query_embedding": query_vector,
+        "match_threshold": 0.5,
+        "match_count": k,
+        }
 
     try:
         # 3. Execute RPC Call using the global client and explicit schema
@@ -115,16 +122,17 @@ def custom_supabase_search(query_text: str, department_filter: list[str], k: int
 
 def retrieve_documents(state: AgentState):
     """
-    Retrieves documents filtering by the user's department.
+    Retrieves documents filtering by the user's department and position.
     """
     department = state["user_department"]
+    position = state["user_position"]
     question = state["question"]
 
     print(f"--- Retrieving for Department: {department} ---")
 
     # METADATA FILTERING
     # This assumes your vector metadata looks like: {"category": "HR", "source": "..."}
-    filters = get_department_categories(department)
+    filters = [] if position.startswith("GR -") else get_department_categories(department)
 
     # Perform similarity search with filter
     docs = custom_supabase_search(question, filters, 4)

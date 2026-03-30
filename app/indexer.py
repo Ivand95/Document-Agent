@@ -257,6 +257,14 @@ class KnowledgeBaseIndexer:
                     ".pptx",
                     ".md",
                     ".txt",
+                    ".csv",
+                    ".xls",
+                    ".xlsx",
+                    ".doc",
+                    ".ppt",
+                    ".png",
+                    ".jpg",
+                    ".jpeg"
                 ]:
                     self.index_file(f)
 
