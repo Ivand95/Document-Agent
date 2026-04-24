@@ -264,7 +264,7 @@ class KnowledgeBaseIndexer:
                     ".ppt",
                     ".png",
                     ".jpg",
-                    ".jpeg"
+                    ".jpeg",
                 ]:
                     self.index_file(f)
 
@@ -350,27 +350,26 @@ class ChatAgent:
         3. If the question requires internal data but the information is NOT in the Context, politely say: "I'm sorry, I couldn't find that specific information in the company documents available to me." and provide the most relevant information available.
         4. If chunks of text are provided, use them to answer the question.
         5. Always maintain a polite and helpful tone.
-        6. Always answer in Spanish unless the user asks for information in another language.
         
 
         Desired Output:
-        Respuesta: [Answer]
+        Answer: [Answer]
         
 
-        Referencia del documento: [Document name]
-        Departmento: [Category]
-        Sección: [Section name]
-        Etiquetas: [Tags]
+        Document reference: [Document name]
+        Department reference: [Category]
+        Section reference: [Section name]
+        Tags: [Tags]
         
         
 
         Example:
-        Respuesta: "The employee benefits are as follows:..."
+        Answer: "The employee benefits are as follows:..."
        
-        Referencia del documento: "Company Policy Manual"
-        Departmento: "HR"
-        Sección: "Employee Benefits"
-        Etiquetas: "employee benefits, company policy, employee handbook"
+        Document reference: "Company Policy Manual"
+        Department reference: "HR"
+        Section reference: "Employee Benefits"
+        Tags: "employee benefits, company policy, employee handbook"
         """
 
         full_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"

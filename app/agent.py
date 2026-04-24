@@ -46,6 +46,7 @@ vector_store = SupabaseVectorStore(
 # --- Define State ---
 class AgentState(TypedDict):
     question: str
+    position: str
     # This is the security context passed from the API
     user_department: str
     context: List[Document]
@@ -75,16 +76,16 @@ def custom_supabase_search(query_text: str, department_filter: list[str], k: int
     # 2. Prepare RPC Parameters (still assuming the SQL uses `filter jsonb`)
     if department_filter != []:
         rpc_params = {
-        "query_embedding": query_vector,
-        "match_threshold": 0.5,
-        "match_count": k,
-        "allowed_categories": department_filter,
+            "query_embedding": query_vector,
+            "match_threshold": 0.5,
+            "match_count": k,
+            "allowed_categories": department_filter,
         }
     else:
         rpc_params = {
-        "query_embedding": query_vector,
-        "match_threshold": 0.5,
-        "match_count": k,
+            "query_embedding": query_vector,
+            "match_threshold": 0.5,
+            "match_count": k,
         }
 
     try:
@@ -125,14 +126,16 @@ def retrieve_documents(state: AgentState):
     Retrieves documents filtering by the user's department and position.
     """
     department = state["user_department"]
-    position = state["user_position"]
+    position = state["position"]
     question = state["question"]
 
     print(f"--- Retrieving for Department: {department} ---")
 
     # METADATA FILTERING
     # This assumes your vector metadata looks like: {"category": "HR", "source": "..."}
-    filters = [] if position.startswith("GR -") else get_department_categories(department)
+    filters = (
+        [] if position.startswith("GR -") else get_department_categories(department)
+    )
 
     # Perform similarity search with filter
     docs = custom_supabase_search(question, filters, 4)

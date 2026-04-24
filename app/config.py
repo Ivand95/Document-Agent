@@ -65,8 +65,10 @@ class EmbeddingService:
 # --- Helper: Department List Dictionary ---
 
 
-def get_department_categories(department: str) -> list[str]:
-    if department not in DEPARTMENT_LIST:
+def get_department_categories(department: str, position: str) -> list[str]:
+    if position and position.startswith("GR -"):
+        return list(DEPARTMENT_LIST.values()) + ["OTROS", "STAFF GERENCIAL"]
+    elif department not in DEPARTMENT_LIST:
         return ["OTROS"]
     return [DEPARTMENT_LIST[department], "OTROS"]
 
