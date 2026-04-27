@@ -88,6 +88,7 @@ class SharePointSync:
             f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives",
             headers=self.headers,
         )
+
         drive_id = next(
             (d["id"] for d in resp.json()["value"] if d["name"] == self.doc_lib_name),
             None,

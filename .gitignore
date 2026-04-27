@@ -4,6 +4,7 @@ node_modules
 .env
 
 *.pyc
+*.pyo
 
 # Logs
 logs
@@ -41,4 +42,7 @@ UI/document-agent/*.suo
 UI/document-agent/*.ntvs*
 UI/document-agent/*.njsproj
 
-**/__pycache__/*
+downloads/*
+downloads_audio/*
+sync_state.json
+sync_state_audio.json
