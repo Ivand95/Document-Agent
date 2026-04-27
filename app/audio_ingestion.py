@@ -41,7 +41,17 @@ class SharePointSync:
         self.doc_lib_name = os.getenv("OFFICE_365_CONVERSATION_DOCUMENT_LIBRARY_NAME")
 
         self.download_dir = download_dir
+        self.state_file = Path("audio_sync_state.json")
+        self.sync_state = {}
+        self.updated_files = []
+        self.headers = None
+        self.scopes = ["https://graph.microsoft.com/.default"]
+
+        if self.state_file.exists():
+            with open(self.state_file, "r") as f:
+                self.sync_state = json.load(f)
         
+        # REGEX: [Name]_Ext-Phone_Timestamp.wav (Phone must be 7-15 digits to filter out extension-to-extension)
         # REGEX EXPLANATION:
         # ^(\[.*?\])? -> Optional [Name]
         # _           -> Underscore separator
@@ -53,10 +63,31 @@ class SharePointSync:
         # .*?\.wav$   -> Ends with .wav
         self.audio_pattern = re.compile(r"^(\[.*?\])?_(\d{3,4})-(\d{7,15})_(\d+).*?\.wav$", re.IGNORECASE)
 
+    def authenticate(self):
+        app = msal.ConfidentialClientApplication(
+            self.client_id,
+            authority=f"https://login.microsoftonline.com/{self.tenant_id}",
+            client_credential=self.client_secret,
+        )
+        result = app.acquire_token_for_client(scopes=self.scopes)
+        if "access_token" in result:
+            self.headers = {"Authorization": f'Bearer {result["access_token"]}'}
+        else:
+            raise Exception(f"Auth failed: {result.get('error_description')}")
+
+    def get_site_and_drive(self):
+        site_url = f"https://graph.microsoft.com/v1.0/sites/{self.host_name}:{self.site_path}"
+        resp = requests.get(site_url, headers=self.headers)
+        resp.raise_for_status()
+        site_id = resp.json()["id"]
+
+        resp = requests.get(f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives", headers=self.headers)
+        drive_id = next((d["id"] for d in resp.json()["value"] if d["name"] == self.doc_lib_name), None)
+        if not drive_id: raise Exception("Drive not found")
+        return site_id, drive_id
+
     def is_valid_audio_file(self, filename):
-        """Checks if the filename matches the specific format requirements."""
-        match = self.audio_pattern.match(filename)
-        return bool(match)
+        return bool(self.audio_pattern.match(filename))
 
     def process_folder(self, site_id, drive_id, folder_id="root", current_path=None):
         if current_path is None:
@@ -75,9 +106,7 @@ class SharePointSync:
                 if "folder" in item:
                     self.process_folder(site_id, drive_id, item["id"], local_path)
                 elif "file" in item:
-                    # --- NEW VALIDATION LOGIC ---
                     if not self.is_valid_audio_file(name):
-                        # Skip files that don't match the Employee_Ext-Phone_Timestamp.wav format
                         continue
                     
                     remote_mod = item["lastModifiedDateTime"]
@@ -97,7 +126,27 @@ class SharePointSync:
 
             url = data.get("@odata.nextLink")
 
-# --- Part 2: Audio Indexer (Audio to Markdown) ---
+    def download_file(self, url, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Downloading: {path}")
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(path, "wb") as f:
+                for chunk in r.iter_content(8192):
+                    f.write(chunk)
+
+    def run(self):
+        self.authenticate()
+        site_id, drive_id = self.get_site_and_drive()
+        print("Starting SharePoint Sync for Audio Files...")
+        self.process_folder(site_id, drive_id)
+
+        with open(self.state_file, "w") as f:
+            json.dump(self.sync_state, f, indent=4)
+
+        return self.updated_files
+
+# --- Part 2: Audio Indexer ---
 class KnowledgeBaseIndexer:
     def __init__(self, root_dir):
         self.root_dir = root_dir
@@ -106,8 +155,14 @@ class KnowledgeBaseIndexer:
         self.converter = DocumentConverter() 
         self.db_schema = SUPABASE_SCHEMA
         self.db_table = SUPABASE_AUDIO_TABLE
-        # Reuse regex for metadata extraction
         self.audio_pattern = re.compile(r"^(\[(.*?)\])?_(\d{3,4})-(\d{7,15})_(\d+).*?\.wav$", re.IGNORECASE)
+
+    def get_category_from_path(self, file_path):
+        try:
+            relative_path = file_path.relative_to(self.root_dir)
+            return "Uncategorized" if str(relative_path.parent) == "." else relative_path.parts[0]
+        except ValueError:
+            return "External"
 
     def extract_metadata_from_name(self, filename):
         match = self.audio_pattern.match(filename)
@@ -117,7 +172,6 @@ class KnowledgeBaseIndexer:
                 "extension": match.group(3),
                 "phone_number": match.group(4),
                 "timestamp_raw": match.group(5),
-                # Optional: Format the timestamp into a readable date if possible
             }
         return {}
 
@@ -125,7 +179,6 @@ class KnowledgeBaseIndexer:
         print(f"Transcribing and Indexing Audio: {file_path.name}")
         try:
             result = self.converter.convert(file_path)
-            # metadata from filename
             file_meta = self.extract_metadata_from_name(file_path.name)
             category = self.get_category_from_path(file_path)
 
@@ -150,32 +203,29 @@ class KnowledgeBaseIndexer:
                         "filename": file_path.name,
                         "category": category,
                         "content_type": "audio_transcript",
-                        **file_meta # Injecting employee_name, extension, etc.
+                        **file_meta 
                     },
                     "embedding": vector,
                 }
                 chunks_to_insert.append(payload)
 
             if chunks_to_insert:
-                batch_size = 10
-                for i in range(0, len(chunks_to_insert), batch_size):
-                    self.supabase.schema(self.db_schema).table(self.db_table).insert(chunks_to_insert[i:i+batch_size]).execute()
+                for i in range(0, len(chunks_to_insert), 10):
+                    self.supabase.schema(self.db_schema).table(self.db_table).insert(chunks_to_insert[i:i+10]).execute()
                 print(f"Indexed {len(chunks_to_insert)} chunks for {file_path.name}")
             
         except Exception as e:
             print(f"Failed to process audio {file_path.name}: {e}")
 
     def run_indexer(self, files_to_process=None):
-        # Initialize the same regex here or pass it from the syncer
-        pattern = re.compile(r"^(\[.*?\])?_(\d{3,4})-(\d{7,15})_(\d+).*?\.wav$", re.IGNORECASE)
-        
         if files_to_process:
             for f in files_to_process:
                 self.index_file(f)
         else:
             for f in self.root_dir.rglob("*.wav"):
-                if f.is_file() and pattern.match(f.name):
+                if f.is_file() and self.audio_pattern.match(f.name):
                     self.index_file(f)
+
 
 # --- Part 3: Interactive Chat Agent Audio ---
 class ChatAgent:
