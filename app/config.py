@@ -14,6 +14,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_SCHEMA = os.getenv("SUPABASE_SCHEMA", "documents_rag")
 SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "chunks")
+SUPABASE_AUDIO_TABLE = os.getenv("SUPABASE_AUDIO_TABLE", "audio_chunks")
 
 DEPARTMENT_LIST = {
     "Gestion Humana": "HR",
