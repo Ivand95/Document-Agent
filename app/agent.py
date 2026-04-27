@@ -25,7 +25,7 @@ load_dotenv()
 # Setup Supabase Client
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SUPABASE_SCHEMA = os.getenv("SUPABASE_SCHEMA", "public")  # Default to public if not set
+# SUPABASE_SCHEMA = os.getenv("SUPABASE_SCHEMA", "public")  # Default to public if not set
 SUPABASE_TABLE = os.getenv(
     "SUPABASE_TABLE", "documents"
 )  # Default to documents if not set
@@ -86,6 +86,7 @@ def custom_supabase_search(query_text: str, department_filter: list[str], k: int
             "query_embedding": query_vector,
             "match_threshold": 0.5,
             "match_count": k,
+            "allowed_categories": department_filter,
         }
 
     try:
@@ -97,8 +98,10 @@ def custom_supabase_search(query_text: str, department_filter: list[str], k: int
             .rpc("match_documents", rpc_params)
             .execute()
         )
+        print(f"==>> global_supabase_client: {global_supabase_client}")
 
         print(f"DEBUG: Supabase RPC response data length: {len(response.data)}")
+        print(f"DEBUG: Supabase RPC response data: {response.data}")
         if not response.data:
             print("DEBUG: No documents returned from Supabase RPC.")
 
@@ -133,9 +136,7 @@ def retrieve_documents(state: AgentState):
 
     # METADATA FILTERING
     # This assumes your vector metadata looks like: {"category": "HR", "source": "..."}
-    filters = (
-        [] if position.startswith("GR -") else get_department_categories(department)
-    )
+    filters = get_department_categories(department, position)
 
     # Perform similarity search with filter
     docs = custom_supabase_search(question, filters, 4)

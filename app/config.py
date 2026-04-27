@@ -12,8 +12,8 @@ LLM_SERVICE = os.getenv("LLM_SERVICE", "openai").lower()
 LLM_API_KEY = os.getenv("LLM_SERVICE_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SUPABASE_SCHEMA = os.getenv("SUPABASE_SCHEMA", "public")
-SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "documents")
+SUPABASE_SCHEMA = os.getenv("SUPABASE_SCHEMA", "documents_rag")
+SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "chunks")
 
 DEPARTMENT_LIST = {
     "Gestion Humana": "HR",
