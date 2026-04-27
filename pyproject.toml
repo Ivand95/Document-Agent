@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "docling==2.9.0",
+    "docling[asr]>=2.91.0",
     "fastapi>=0.124.4",
     "google-generativeai>=0.8.5",
     "langchain>=1.2.0",

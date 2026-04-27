@@ -45,4 +45,4 @@ UI/document-agent/*.njsproj
 downloads/*
 downloads_audio/*
 sync_state.json
-sync_state_audio.json
+audio_sync_state.json
