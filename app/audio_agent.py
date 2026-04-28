@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import re
 from typing import Annotated, List, Dict
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
@@ -39,33 +40,30 @@ global_chat_agent_for_graph = ChatAgent()
 
 # --- Nodes ---
 
-def custom_supabase_search(query_text: str, k: int = 8):
+def custom_supabase_search(query_text: str, extension_filter: str = None, k: int = 8):
     query_vector = global_embedding_service_instance.get_embedding(query_text)
     if query_vector is None: return []
 
-    # RPC parameters matching your audio SQL function
     rpc_params = {
         "query_embedding": query_vector,
-        "match_threshold": 0.4, # Slightly lower for audio transcripts which can be messy
+        "match_threshold": 0.2, # Lower threshold for audio
         "match_count": k,
+        "filter_extension": extension_filter 
     }
 
     try:
-        # Calling the RPC 'match_conversations' as defined in your audio_ingestion ChatAgent
         response = (
             global_supabase_client.schema(SUPABASE_SCHEMA)
             .rpc("match_conversations", rpc_params)
             .execute()
         )
-
+        
         conversations = []
         for record in response.data:
-            # We pass the metadata through so the LLM can see 'employee_name', 'extension', etc.
-            conversation = Document(
+            conversations.append(Document(
                 page_content=record.get("content", ""),
                 metadata=record.get("metadata", {})
-            )
-            conversations.append(conversation)
+            ))
         return conversations
     except Exception as e:
         print(f"Search Error: {e}")
@@ -73,8 +71,17 @@ def custom_supabase_search(query_text: str, k: int = 8):
 
 def retrieve_conversations(state: AgentState):
     question = state["question"]
+
+    # Looks for 4-digit numbers in the user's prompt
+    ext_match = re.search(r'\b\d{4}\b', question)
+    detected_ext = ext_match.group(0) if ext_match else None
     
-    conversations = custom_supabase_search(question, 5)
+    if detected_ext:
+        print(f"DEBUG: Detected extension {detected_ext} in query. Applying filter.")
+    
+    # Pass the detected extension to the search
+    conversations = custom_supabase_search(question, extension_filter=detected_ext, k=5)
+
     return {"context": conversations}
 
 async def generate_answer(state: AgentState):
