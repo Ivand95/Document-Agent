@@ -17,6 +17,7 @@ from fastapi import (
     Query,
 )
 from fastapi.responses import HTMLResponse
+from langchain_core.messages import HumanMessage
 from fastapi.security import (
     HTTPAuthorizationCredentials,
     HTTPBearer,
@@ -272,7 +273,7 @@ async def websocket_chat(
 
             # 3. Prepare inputs for your Agent (e.g., LangGraph)
             inputs = {
-                "question": user_message,
+                "messages": [HumanMessage(content=user_message)],
                 "user_department": department,
                 "position": position,
             }

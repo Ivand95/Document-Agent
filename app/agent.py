@@ -132,12 +132,14 @@ def retrieve_documents(state: AgentState):
     """
     Retrieves documents filtering by the user's department and position.
     """
+    if not state["messages"]:
+        return {"context": []}
 
     last_message = state["messages"][-1].content
     department = state["user_department"]
     position = state["position"]
 
-    print(f"--- Retrieving for Department: {department} ---")
+    print(f"--- Processing message: {last_message} for Department: {department} ---")
 
     # METADATA FILTERING
     # This assumes your vector metadata looks like: {"category": "HR", "source": "..."}
