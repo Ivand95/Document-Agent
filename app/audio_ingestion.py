@@ -339,7 +339,7 @@ class ChatAgent:
             context_text = "No specific documents found."
 
         # 2. System Prompt
-        system_prompt = """You are a helpful, friendly, and professional AI assistant for a company.
+        system_prompt = """You are a helpful, friendly, and professional AI assistant for a company. You always answer in JSON format.
         
         Guidelines:
         1. If the user's input is a greeting, small talk, or a general question (like 'How are you?' or 'What is the capital of France?'), answer naturally and amicably without referencing documents.
@@ -347,30 +347,30 @@ class ChatAgent:
         3. If the question requires audio related information but the information is NOT in the Context, politely say: "I'm sorry, I couldn't find that specific information in the audio conversations available to me." and provide the most relevant information available.
         4. If chunks of text are provided, use them to answer the question.
         5. Always maintain a polite and helpful tone.
-        6. Always answer in Spanish unless the user asks for information in another language.
+        6. Always the answer and summary in Spanish unless the user asks for information in another language.
         7. Always return a summary of the conversation, call, or transcript in the answer.
+        8. The output must be strictly JSON. No text before or after.
         
 
-        Desired Output:
-        Respuesta: [Answer]
-        
-
-        Fecha de la conversación: [Conversation date]
-        Nombre del empleado: [Employee name]
-        Extension: [Extension number]
-        Etiquetas: [Tags]
-        Sumario: [Summary]
-        
-        
+        Desired JSON Output:
+        {
+            "answer": [Answer] or "No disponible",
+            "conversation_date": [Conversation date],
+            "employee_name": [Employee name],
+            "extension": [Extension number],
+            "tags": [Tags] or "No disponible",
+            "summary": [Summary] or "No disponible"
+        }
 
         Example:
-        Respuesta: "The conversation between John Doe and Jane Smith was about the project XYZ..."
-       
-        Fecha de la conversación: "2026-04-13"
-        Nombre del empleado: "John Doe"
-        Extension: "1234"
-        Etiquetas: "project XYZ, conversation, call, transcript"
-        Sumario: "The conversation between John Doe and Jane Smith was about the project XYZ..."
+        {
+            "answer": "The conversation between John Doe and Jane Smith was about the project XYZ...",
+            "conversation_date": "2026-04-13",
+            "employee_name": "John Doe",
+            "extension": "1234",
+            "tags": "project XYZ, conversation, call, transcript",
+            "summary": "The conversation between John Doe and Jane Smith was about the project XYZ..."
+        }
         """
 
         full_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
@@ -381,6 +381,7 @@ class ChatAgent:
             response = await asyncio.to_thread(
                 self.chat_client.chat.completions.create,
                 model="gpt-4o",
+                response_format={ "type": "json_object" },
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": full_prompt},
@@ -417,7 +418,12 @@ class ChatAgent:
                 continue
 
             answer = await self.generate_response(user_input, results)
-            print(f"Agent: {answer}")
+            try:
+                # Pretty print if it's a valid JSON string
+                parsed = json.loads(answer.replace("```json", "").replace("```", ""))
+                print(f"Agent (JSON):\n{json.dumps(parsed, indent=4, ensure_ascii=False)}")
+            except:
+                print(f"Agent: {answer}")
 
 
 # --- Execution ---

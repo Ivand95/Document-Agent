@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import json
 from typing import Annotated, List, Dict
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
@@ -50,7 +51,7 @@ class AgentState(TypedDict):
     # This is the security context passed from the API
     user_department: str
     context: List[Document]
-    answer: str
+    answer: dict
 
 
 # --- Initialize ChatAgent ---
@@ -146,20 +147,30 @@ def retrieve_documents(state: AgentState):
 
 async def generate_answer(state: AgentState):
     """
-    Generates answer using retrieved context by leveraging the ChatAgent's logic.
+    Generates answer and parses the JSON string into the state.
     """
-    print("--- GENERATING ANSWER ---")
+    print("--- GENERATING JSON ANSWER ---")
 
     question = state["question"]
-    context_documents = state["context"]  # This is already a list of Document objects
+    context_documents = state["context"]
 
-    answer_content = await global_chat_agent_for_graph.generate_response(
+    # This gets the raw string from the LLM
+    raw_answer = await global_chat_agent_for_graph.generate_response(
         question, context_documents
     )
 
-    print(f"Generated answer: {answer_content[:100]}...")  # Print first 100 chars
+    try:
+        # Clean the response in case the LLM included markdown code blocks like ```json ... ```
+        clean_json = raw_answer.strip().replace("```json", "").replace("```", "")
+        json_data = json.loads(clean_json)
+        
+        # We store the dictionary in the answer field
+        return {"answer": json_data}
+    except Exception as e:
+        print(f"Error parsing JSON: {e}")
+        # Fallback if the LLM fails to output valid JSON
+        return {"answer": {"error": "Failed to parse JSON", "raw": raw_answer}}
 
-    return {"answer": answer_content}
 
 
 # --- Graph Construction ---

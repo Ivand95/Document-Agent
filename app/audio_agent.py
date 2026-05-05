@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import re
+import json
 from typing import Annotated, List, Dict
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
@@ -85,14 +86,30 @@ def retrieve_conversations(state: AgentState):
     return {"context": conversations}
 
 async def generate_answer(state: AgentState):
+    """
+    Generates answer and parses the JSON string into the state.
+    """
+    print("--- GENERATING JSON ANSWER ---")
+
     question = state["question"]
     context_conversations = state["context"]
 
-    # This calls the method in audio_ingestion.py which has the Spanish prompts
-    answer_content = await global_chat_agent_for_graph.generate_response(
+    raw_answer = await global_chat_agent_for_graph.generate_response(
         question, context_conversations
     )
-    return {"answer": answer_content}
+
+    try:
+        # Clean the response in case the LLM included markdown code blocks like ```json ... ```
+        clean_json = raw_answer.strip().replace("```json", "").replace("```", "")
+        json_data = json.loads(clean_json)
+        
+        # We store the dictionary in the answer field
+        return {"answer": json_data}
+    except Exception as e:
+        print(f"Error parsing JSON: {e}")
+        # Fallback if the LLM fails to output valid JSON
+        return {"answer": {"error": "Failed to parse JSON", "raw": raw_answer}}
+
 
 # --- Graph Construction ---
 workflow = StateGraph(AgentState)

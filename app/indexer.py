@@ -342,7 +342,7 @@ class ChatAgent:
             context_text = "No specific documents found."
 
         # 2. System Prompt
-        system_prompt = """You are a helpful, friendly, and professional AI assistant for a company.
+        system_prompt = """You are a helpful, friendly, and professional AI assistant for a company. You always answer in JSON format.
         
         Guidelines:
         1. If the user's input is a greeting, small talk, or a general question (like 'How are you?' or 'What is the capital of France?'), answer naturally and amicably without referencing documents.
@@ -353,23 +353,22 @@ class ChatAgent:
         
 
         Desired Output:
-        Answer: [Answer]
-        
-
-        Document reference: [Document name]
-        Department reference: [Category]
-        Section reference: [Section name]
-        Tags: [Tags]
-        
-        
+        {
+            "answer": [Answer] or "No disponible",
+            "document_reference": [Document name] or "No disponible",
+            "department_reference": [Category] or "No disponible",
+            "section_reference": [Section name] or "No disponible",
+            "tags": [Tags] or "No disponible"
+        }
 
         Example:
-        Answer: "The employee benefits are as follows:..."
-       
-        Document reference: "Company Policy Manual"
-        Department reference: "HR"
-        Section reference: "Employee Benefits"
-        Tags: "employee benefits, company policy, employee handbook"
+        {
+            "answer": "The employee benefits are as follows:...",
+            "document_reference": "Company Policy Manual",
+            "department_reference": "HR",
+            "section_reference": "Employee Benefits",
+            "tags": "employee benefits, company policy, employee handbook"
+        }
         """
 
         full_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
@@ -380,6 +379,7 @@ class ChatAgent:
             response = await asyncio.to_thread(
                 self.chat_client.chat.completions.create,
                 model="gpt-4o",
+                response_format={ "type": "json_object" },
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": full_prompt},
@@ -416,7 +416,12 @@ class ChatAgent:
                 continue
 
             answer = await self.generate_response(user_input, results)
-            print(f"Agent: {answer}")
+            try:
+                # Pretty print if it's a valid JSON string
+                parsed = json.loads(answer.replace("```json", "").replace("```", ""))
+                print(f"Agent (JSON):\n{json.dumps(parsed, indent=4, ensure_ascii=False)}")
+            except:
+                print(f"Agent: {answer}")
 
 
 # --- Scheduled Indexing Execution Flow ---
