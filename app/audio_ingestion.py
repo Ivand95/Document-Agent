@@ -10,8 +10,11 @@ from dotenv import load_dotenv
 
 # --- Indexing imports ---
 from supabase import create_client, Client
-from docling.document_converter import DocumentConverter
+from docling.document_converter import AudioFormatOption, DocumentConverter
 from docling.datamodel.base_models import InputFormat
+from docling.datamodel import asr_model_specs
+from docling.datamodel.pipeline_options import AsrPipelineOptions
+from docling.pipeline.asr_pipeline import AsrPipeline
 import openai
 import google.generativeai as genai
 
@@ -163,10 +166,20 @@ class SharePointSync:
 # --- Part 2: Audio Indexer ---
 class KnowledgeBaseIndexer:
     def __init__(self, root_dir):
+        # Configure ASR pipeline
+        pipeline_options = AsrPipelineOptions(
+            asr_options=asr_model_specs.WHISPER_SMALL, language="es"
+        )
+        format_options = {
+            InputFormat.AUDIO: AudioFormatOption(
+                pipeline_cls=AsrPipeline,
+                pipeline_options=pipeline_options,
+            )
+        }
         self.root_dir = root_dir
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         self.embedder = global_embedding_service_instance
-        self.converter = DocumentConverter()
+        self.converter = DocumentConverter(format_options=format_options)
         self.db_schema = SUPABASE_SCHEMA
         self.db_table = SUPABASE_AUDIO_TABLE
         self.audio_pattern = re.compile(
