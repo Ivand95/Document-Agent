@@ -21,14 +21,25 @@ type MessageRole = "user" | "assistant";
 interface Message {
   id: string;
   role: MessageRole;
-  content: {
-    answer: string;
-    departament_references: string;
-    document_reference: string;
-    section_reference: string;
-    tags: string;
-  };
+  content: audioMessageContent | documentMessageContent;
   timestamp: Date;
+}
+
+interface audioMessageContent {
+  answer: string;
+  conversation_date: string;
+  employee_name: string;
+  extension: string;
+  summary: string;
+  tags: string;
+}
+
+interface documentMessageContent {
+  answer: string;
+  department_reference: string;
+  document_reference: string;
+  section_reference: string;
+  tags: string;
 }
 
 interface UserInfo {
@@ -313,6 +324,104 @@ const AgentSelector = ({
   );
 };
 
+// ---- MessageReferences ----
+
+const isDocumentContent = (
+  c: Message["content"],
+): c is documentMessageContent => "document_reference" in c;
+
+const isAudioContent = (
+  c: Message["content"],
+): c is audioMessageContent => "employee_name" in c;
+
+const RefRow = ({ label, value }: { label: string; value: string }) => (
+  <div className="msg-refs-row">
+    <span className="msg-refs-label">{label}</span>
+    <span className="msg-refs-value">{value}</span>
+  </div>
+);
+
+const MessageReferences = ({ content }: { content: Message["content"] }) => {
+  const [open, setOpen] = useState(false);
+
+  const hasRefs = content.tags || (
+    isDocumentContent(content)
+      ? content.document_reference || content.section_reference || content.department_reference
+      : content.employee_name || content.conversation_date || content.summary
+  );
+
+  if (!hasRefs) return null;
+
+  const tags = content.tags
+    ? content.tags.split(",").map((t) => t.trim()).filter(Boolean)
+    : [];
+
+  return (
+    <div className="msg-refs">
+      <button
+        type="button"
+        className="msg-refs-toggle"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <span>Referencias</span>
+        <KeyboardArrowDown
+          className={`msg-refs-chevron ${open ? "msg-refs-chevron--open" : ""}`}
+          sx={{ fontSize: 14 }}
+        />
+      </button>
+
+      {open && (
+        <div className="msg-refs-body">
+          {isDocumentContent(content) && (
+            <>
+              {content.document_reference && (
+                <RefRow label="Documento" value={content.document_reference} />
+              )}
+              {content.section_reference && (
+                <RefRow label="Sección" value={content.section_reference} />
+              )}
+              {content.department_reference && (
+                <RefRow label="Departamento" value={content.department_reference} />
+              )}
+            </>
+          )}
+
+          {isAudioContent(content) && (
+            <>
+              {content.employee_name && (
+                <RefRow label="Empleado" value={content.employee_name} />
+              )}
+              {content.conversation_date && (
+                <RefRow label="Fecha" value={content.conversation_date} />
+              )}
+              {content.extension && (
+                <RefRow label="Extensión" value={content.extension} />
+              )}
+              {content.summary && (
+                <div className="msg-refs-summary">
+                  <span className="msg-refs-label">Resumen</span>
+                  <p className="msg-refs-summary-text">{content.summary}</p>
+                </div>
+              )}
+            </>
+          )}
+
+          {tags.length > 0 && (
+            <div className="msg-refs-tags">
+              {tags.map((tag) => (
+                <span key={tag} className="msg-ref-tag">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ---- MessageBubble ----
 
 const MessageBubble = ({ msg }: { msg: Message }) => (
@@ -330,6 +439,7 @@ const MessageBubble = ({ msg }: { msg: Message }) => (
       <div className="chat-message-content">
         <Markdown remarkPlugins={[remarkGfm]}>{msg.content.answer}</Markdown>
       </div>
+      {msg.role === "assistant" && <MessageReferences content={msg.content} />}
       <time
         className="chat-message-time"
         dateTime={msg.timestamp.toISOString()}
@@ -452,7 +562,7 @@ export const Chat = (props: {
         role: "user",
         content: {
           answer: trimmed,
-          departament_references: "",
+          department_reference: "",
           document_reference: "",
           section_reference: "",
           tags: "",
