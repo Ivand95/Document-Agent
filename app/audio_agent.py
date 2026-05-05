@@ -3,6 +3,7 @@ import sys
 import asyncio
 import re
 import json
+import operator
 from typing import Annotated, List, Dict
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
@@ -10,6 +11,8 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_core.documents import Document
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langgraph.checkpoint.memory import MemorySaver
 from supabase.client import create_client, Client
 
 from langgraph.graph import StateGraph, END
@@ -31,10 +34,11 @@ SUPABASE_SCHEMA = os.getenv("SUPABASE_SCHEMA")
 
 # --- Define State ---
 class AgentState(TypedDict):
-    question: str
+    position: str
     user_department: str
     context: List[Document]
-    answer: str
+    answer: dict
+    messages: Annotated[List[BaseMessage], operator.add]
 
 # --- Initialize ChatAgent ---
 global_chat_agent_for_graph = ChatAgent()
@@ -71,44 +75,49 @@ def custom_supabase_search(query_text: str, extension_filter: str = None, k: int
         return []
 
 def retrieve_conversations(state: AgentState):
-    question = state["question"]
-
-    # Looks for 4-digit numbers in the user's prompt
-    ext_match = re.search(r'\b\d{4}\b', question)
+    # Get the latest message from the history
+    last_message = state["messages"][-1].content
+    
+    # Detect extension in the latest message
+    ext_match = re.search(r'\b\d{4}\b', last_message)
     detected_ext = ext_match.group(0) if ext_match else None
     
-    if detected_ext:
-        print(f"DEBUG: Detected extension {detected_ext} in query. Applying filter.")
-    
-    # Pass the detected extension to the search
-    conversations = custom_supabase_search(question, extension_filter=detected_ext, k=5)
+    # Search Supabase using the latest message content
+    conversations = custom_supabase_search(last_message, extension_filter=detected_ext, k=5)
 
     return {"context": conversations}
 
 async def generate_answer(state: AgentState):
-    """
-    Generates answer and parses the JSON string into the state.
-    """
-    print("--- GENERATING JSON ANSWER ---")
+    # Pass the whole message history to the LLM so it has context
+    history = state["messages"]
+    context_docs = state["context"]
 
-    question = state["question"]
-    context_conversations = state["context"]
-
-    raw_answer = await global_chat_agent_for_graph.generate_response(
-        question, context_conversations
+    # We modify ChatAgent.generate_response to accept the history (see Step 3)
+    raw_json_str = await global_chat_agent_for_graph.generate_response(
+        history, context_docs
     )
 
     try:
-        # Clean the response in case the LLM included markdown code blocks like ```json ... ```
-        clean_json = raw_answer.strip().replace("```json", "").replace("```", "")
-        json_data = json.loads(clean_json)
-        
-        # We store the dictionary in the answer field
-        return {"answer": json_data}
-    except Exception as e:
-        print(f"Error parsing JSON: {e}")
-        # Fallback if the LLM fails to output valid JSON
-        return {"answer": {"error": "Failed to parse JSON", "raw": raw_answer}}
+        structured_data = json.loads(raw_json_str)
+        # Create an AIMessage to append to the graph state
+        ai_message = AIMessage(content=raw_json_str)
+        return {"answer": structured_data, "messages": [ai_message]}
+    except:
+        return {"answer": {"error": "JSON Error"}, "messages": [AIMessage(content=raw_json_str)]}
+
+
+# Example of how to invoke and see the result
+async def test_run():
+    inputs = {"question": "Dame un resumen de la extencion 1055", "user_department": "General"}
+    final_state = await app_audio_graph.ainvoke(inputs)
+    
+    ans = final_state["answer"]
+    print(f"Empleado: {ans.get('nombre_empleado')}")
+    print(f"Resumen: {ans.get('sumario')}")
+
+if __name__ == "__main__":
+    asyncio.run(test_run())
+
 
 
 # --- Graph Construction ---
@@ -118,7 +127,10 @@ workflow.add_node("generate", generate_answer)
 workflow.set_entry_point("retrieve")
 workflow.add_edge("retrieve", "generate")
 workflow.add_edge("generate", END)
-app_audio_graph = workflow.compile()
+
+memory = MemorySaver()
+
+app_audio_graph = workflow.compile(checkpointer=memory)
 
 # --- Main Execution ---
 if __name__ == "__main__":

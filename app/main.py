@@ -374,7 +374,7 @@ async def websocket_chat_audio(
 
             # 3. Prepare inputs for your Agent (e.g., LangGraph)
             inputs = {
-                "question": user_message,
+                "messages": [HumanMessage(content=user_message)],
                 "user_department": department,
             }
 

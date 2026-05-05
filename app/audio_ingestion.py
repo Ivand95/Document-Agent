@@ -8,6 +8,8 @@ import dateutil.parser
 from pathlib import Path
 from dotenv import load_dotenv
 
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+
 # --- Indexing imports ---
 from supabase import create_client, Client
 from docling.document_converter import AudioFormatOption, DocumentConverter
@@ -200,13 +202,19 @@ class KnowledgeBaseIndexer:
     def extract_metadata_from_name(self, filename):
         match = self.audio_pattern.match(filename)
         if match:
+            raw_ts = match.group(5)
+            # Format: 20260109155424 -> 2026-01-09
+            formatted_date = f"{raw_ts[:4]}-{raw_ts[4:6]}-{raw_ts[6:8]}" if len(raw_ts) >= 8 else "No disponible"
+            
             return {
                 "employee_name": match.group(2) if match.group(2) else "Unknown",
                 "extension": match.group(3),
                 "phone_number": match.group(4),
-                "timestamp_raw": match.group(5),
+                "timestamp_raw": raw_ts,
+                "date_formatted": formatted_date # AI will use this easily
             }
         return {}
+
 
     def index_file(self, file_path):
         print(f"Transcribing and Indexing Audio: {file_path.name}")
@@ -311,34 +319,13 @@ class ChatAgent:
             print(f"Search Error: {e}")
             return []
 
-    async def generate_response(self, query, context_chunks):
-        """Constructs a prompt and gets an answer from the LLM."""
+    async def generate_response(self, query, message_history, context_chunks):
+        # 1. Prepare Context as before
+        context_text = "\n\n".join([...]) 
 
-        # 1. Prepare Context - This section is the critical fix
-        processed_context_chunks = []
-        for chunk in context_chunks:
-            if isinstance(chunk, Document):
-                # Convert Document object back to a dictionary format expected by the join
-                processed_context_chunks.append(
-                    {"content": chunk.page_content, "metadata": chunk.metadata}
-                )
-            else:
-                # If a dictionary somehow comes through (e.g., from old console path), use it as is
-                processed_context_chunks.append(chunk)
+        # 2. Build Messages for OpenAI
+        # Start with the System Prompt
 
-        has_context = len(processed_context_chunks) > 0
-
-        if has_context:
-            context_text = "\n\n".join(
-                [
-                    f"SOURCE ({c['metadata'].get('filename', 'Unknown') }): {c['content']}"
-                    for c in processed_context_chunks
-                ]
-            )
-        else:
-            context_text = "No specific documents found."
-
-        # 2. System Prompt
         system_prompt = """You are a helpful, friendly, and professional AI assistant for a company. You always answer in JSON format.
         
         Guidelines:
@@ -375,23 +362,29 @@ class ChatAgent:
 
         full_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
 
+        messages = [
+            {"role": "system", "content": system_prompt + f"\nContexto de documentos:\n{context_text}"}
+        ]
+
+        # Add the conversation history
+        for msg in message_history:
+            role = "user" if isinstance(msg, HumanMessage) else "assistant"
+            messages.append({"role": role, "content": msg.content})
+
         # 3. Call LLM
         if LLM_SERVICE == "openai":
-            # Run the asynchronous OpenAI call in a background thread
             response = await asyncio.to_thread(
-                self.chat_client.chat.completions.create,
-                model="gpt-4o",
-                response_format={ "type": "json_object" },
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": full_prompt},
-                ],
+            self.chat_client.chat.completions.create,
+            model="gpt-4o",
+            response_format={"type": "json_object"},
+            messages=messages
             )
             return response.choices[0].message.content
 
+
         elif LLM_SERVICE == "gemini":
             # Run the asynchronous Gemini call in a background thread
-            prompt = f"{system_prompt}\n\n{full_prompt}"
+            prompt = f"{system_prompt}\n\n{message_history}"
             response = await asyncio.to_thread(self.chat_model.generate_content, prompt)
             return response.text
 
