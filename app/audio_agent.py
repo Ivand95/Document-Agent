@@ -48,16 +48,16 @@ global_chat_agent_for_graph = ChatAgent()
 # --- Nodes ---
 
 
-def custom_supabase_search(query_text: str, extension_filter: str = None, k: int = 8):
+def custom_supabase_search(query_text, extension=None, date=None, recipient=None, k=5):
     query_vector = global_embedding_service_instance.get_embedding(query_text)
-    if query_vector is None:
-        return []
-
+    
     rpc_params = {
         "query_embedding": query_vector,
-        "match_threshold": 0.2,  # Lower threshold for audio
+        "match_threshold": 0.2,
         "match_count": k,
-        "filter_extension": extension_filter,
+        "filter_extension": extension,
+        "filter_date": date,
+        "filter_recipient": recipient
     }
 
     try:
@@ -82,19 +82,27 @@ def custom_supabase_search(query_text: str, extension_filter: str = None, k: int
 
 
 def retrieve_conversations(state: AgentState):
-    if not state["messages"]:
-        return {"context": []}
-
-    # Get the latest message from the history
+    if not state.get("messages"): return {"context": []}
+    
     last_message = state["messages"][-1].content
-
-    # Detect extension in the latest message
-    ext_match = re.search(r"\b\d{4}\b", last_message)
-    detected_ext = ext_match.group(0) if ext_match else None
-
-    # Search Supabase using the latest message content
+    
+    # --- Extraction Logic ---
+    # 1. Detect Extension (4 digits)
+    ext_match = re.search(r'\b\d{4}\b', last_message)
+    
+    # 2. Detect Date (YYYY-MM-DD)
+    date_match = re.search(r'\d{4}-\d{2}-\d{2}', last_message)
+    
+    # 3. Detect Recipient (Phone number, usually 7-11 digits)
+    # We look for long numbers that aren't the date
+    recipient_match = re.search(r'\b\d{7,15}\b', last_message)
+    
     conversations = custom_supabase_search(
-        last_message, extension_filter=detected_ext, k=60
+        query_text=last_message,
+        extension=ext_match.group(0) if ext_match else None,
+        date=date_match.group(0) if date_match else None,
+        recipient=recipient_match.group(0) if recipient_match else None,
+        k=60
     )
 
     return {"context": conversations}

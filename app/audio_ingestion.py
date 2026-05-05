@@ -203,17 +203,17 @@ class KnowledgeBaseIndexer:
         match = self.audio_pattern.match(filename)
         if match:
             raw_ts = match.group(5)
-            # Format: 20260109155424 -> 2026-01-09
-            formatted_date = f"{raw_ts[:4]}-{raw_ts[4:6]}-{raw_ts[6:8]}" if len(raw_ts) >= 8 else "No disponible"
-            
+            # Format: 20260109 -> 2026-01-09
+            formatted_date = f"{raw_ts[:4]}-{raw_ts[4:6]}-{raw_ts[6:8]}"
             return {
                 "employee_name": match.group(2) if match.group(2) else "Unknown",
                 "extension": match.group(3),
-                "phone_number": match.group(4),
+                "phone_number": match.group(4), # This is the 'Recipient'
                 "timestamp_raw": raw_ts,
-                "date_formatted": formatted_date # AI will use this easily
+                "date_formatted": formatted_date 
             }
         return {}
+
 
 
     def index_file(self, file_path):
