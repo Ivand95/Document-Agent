@@ -15,6 +15,7 @@ import openai
 import google.generativeai as genai
 
 from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from config import (
     global_supabase_client,
     global_embedding_service_instance,
@@ -314,7 +315,7 @@ class ChatAgent:
             print(f"Search Error: {e}")
             return []
 
-    async def generate_response(self, query, context_chunks):
+    async def generate_response(self, query, message_history, context_chunks):
         """Constructs a prompt and gets an answer from the LLM."""
 
         # 1. Prepare Context - This section is the critical fix
@@ -373,6 +374,15 @@ class ChatAgent:
 
         full_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
 
+        messages = [
+            {"role": "system", "content": system_prompt + f"\nContexto de documentos:\n{context_text}"}
+        ]
+
+        # Add the conversation history
+        for msg in message_history:
+            role = "user" if isinstance(msg, HumanMessage) else "assistant"
+            messages.append({"role": role, "content": msg.content})
+
         # 3. Call LLM
         if LLM_SERVICE == "openai":
             # Run the asynchronous OpenAI call in a background thread
@@ -380,10 +390,7 @@ class ChatAgent:
                 self.chat_client.chat.completions.create,
                 model="gpt-4o",
                 response_format={ "type": "json_object" },
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": full_prompt},
-                ],
+                messages=messages
             )
             return response.choices[0].message.content
 

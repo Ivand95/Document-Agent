@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import json
+import operator
 from typing import Annotated, List, Dict
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
@@ -9,6 +10,8 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage, BaseMessage, AIMessage
+from langgraph.checkpoint.memory import MemorySaver
 from supabase.client import create_client, Client
 
 from langgraph.graph import StateGraph, END
@@ -46,10 +49,10 @@ vector_store = SupabaseVectorStore(
 
 # --- Define State ---
 class AgentState(TypedDict):
-    question: str
+    #question: str
     position: str
-    # This is the security context passed from the API
     user_department: str
+    messages: Annotated[List[BaseMessage], operator.add]
     context: List[Document]
     answer: dict
 
@@ -129,9 +132,10 @@ def retrieve_documents(state: AgentState):
     """
     Retrieves documents filtering by the user's department and position.
     """
+
+    last_message = state["messages"][-1].content
     department = state["user_department"]
     position = state["position"]
-    question = state["question"]
 
     print(f"--- Retrieving for Department: {department} ---")
 
@@ -140,7 +144,7 @@ def retrieve_documents(state: AgentState):
     filters = get_department_categories(department, position)
 
     # Perform similarity search with filter
-    docs = custom_supabase_search(question, filters, 4)
+    docs = custom_supabase_search(last_message, filters, 4)
 
     return {"context": docs}
 
@@ -151,12 +155,12 @@ async def generate_answer(state: AgentState):
     """
     print("--- GENERATING JSON ANSWER ---")
 
-    question = state["question"]
+    history = state["messages"]
     context_documents = state["context"]
 
     # This gets the raw string from the LLM
     raw_answer = await global_chat_agent_for_graph.generate_response(
-        question, context_documents
+        history, context_documents
     )
 
     try:
@@ -165,11 +169,11 @@ async def generate_answer(state: AgentState):
         json_data = json.loads(clean_json)
         
         # We store the dictionary in the answer field
-        return {"answer": json_data}
+        return {"answer": json_data, "messages": [AIMessage(content=raw_answer)]}
     except Exception as e:
         print(f"Error parsing JSON: {e}")
         # Fallback if the LLM fails to output valid JSON
-        return {"answer": {"error": "Failed to parse JSON", "raw": raw_answer}}
+        return {"answer": {"error": "JSON Error"}, "messages": [AIMessage(content=raw_answer)]}
 
 
 
@@ -184,7 +188,9 @@ workflow.set_entry_point("retrieve")
 workflow.add_edge("retrieve", "generate")
 workflow.add_edge("generate", END)
 
-app_graph = workflow.compile()
+memory = MemorySaver()
+
+app_graph = workflow.compile(checkpointer=memory)
 
 
 # --- Main Execution ---
