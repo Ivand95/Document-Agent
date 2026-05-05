@@ -159,10 +159,11 @@ async def generate_answer(state: AgentState):
 
     history = state["messages"]
     context_documents = state["context"]
+    query = history[-1].content if history else ""
 
     # This gets the raw string from the LLM
     raw_answer = await global_chat_agent_for_graph.generate_response(
-        history, context_documents
+        query, history, context_documents
     )
 
     try:
