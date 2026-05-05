@@ -321,7 +321,7 @@ class ChatAgent:
 
     async def generate_response(self, query, message_history, context_chunks):
         # 1. Prepare Context as before
-        context_text = "\n\n".join([...]) 
+        context_text = "\n\n".join([doc.page_content for doc in context_chunks])
 
         # 2. Build Messages for OpenAI
         # Start with the System Prompt

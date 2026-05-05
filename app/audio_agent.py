@@ -16,12 +16,12 @@ from langgraph.checkpoint.memory import MemorySaver
 from supabase.client import create_client, Client
 
 from langgraph.graph import StateGraph, END
-from audio_ingestion import ChatAgent 
+from audio_ingestion import ChatAgent
 from config import (
     global_supabase_client,
     global_embedding_service_instance,
     SUPABASE_SCHEMA,
-    SUPABASE_AUDIO_TABLE # Ensure this points to your audio table
+    SUPABASE_AUDIO_TABLE,  # Ensure this points to your audio table
 )
 
 load_dotenv()
@@ -32,6 +32,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_AUDIO_TABLE = os.getenv("SUPABASE_AUDIO_TABLE")
 SUPABASE_SCHEMA = os.getenv("SUPABASE_SCHEMA")
 
+
 # --- Define State ---
 class AgentState(TypedDict):
     position: str
@@ -40,20 +41,23 @@ class AgentState(TypedDict):
     answer: dict
     messages: Annotated[List[BaseMessage], operator.add]
 
+
 # --- Initialize ChatAgent ---
 global_chat_agent_for_graph = ChatAgent()
 
 # --- Nodes ---
 
+
 def custom_supabase_search(query_text: str, extension_filter: str = None, k: int = 8):
     query_vector = global_embedding_service_instance.get_embedding(query_text)
-    if query_vector is None: return []
+    if query_vector is None:
+        return []
 
     rpc_params = {
         "query_embedding": query_vector,
-        "match_threshold": 0.2, # Lower threshold for audio
+        "match_threshold": 0.2,  # Lower threshold for audio
         "match_count": k,
-        "filter_extension": extension_filter 
+        "filter_extension": extension_filter,
     }
 
     try:
@@ -62,39 +66,49 @@ def custom_supabase_search(query_text: str, extension_filter: str = None, k: int
             .rpc("match_conversations", rpc_params)
             .execute()
         )
-        
+
         conversations = []
         for record in response.data:
-            conversations.append(Document(
-                page_content=record.get("content", ""),
-                metadata=record.get("metadata", {})
-            ))
+            conversations.append(
+                Document(
+                    page_content=record.get("content", ""),
+                    metadata=record.get("metadata", {}),
+                )
+            )
         return conversations
     except Exception as e:
         print(f"Search Error: {e}")
         return []
 
+
 def retrieve_conversations(state: AgentState):
+    if not state["messages"]:
+        return {"context": []}
+
     # Get the latest message from the history
     last_message = state["messages"][-1].content
-    
+
     # Detect extension in the latest message
-    ext_match = re.search(r'\b\d{4}\b', last_message)
+    ext_match = re.search(r"\b\d{4}\b", last_message)
     detected_ext = ext_match.group(0) if ext_match else None
-    
+
     # Search Supabase using the latest message content
-    conversations = custom_supabase_search(last_message, extension_filter=detected_ext, k=5)
+    conversations = custom_supabase_search(
+        last_message, extension_filter=detected_ext, k=60
+    )
 
     return {"context": conversations}
+
 
 async def generate_answer(state: AgentState):
     # Pass the whole message history to the LLM so it has context
     history = state["messages"]
     context_docs = state["context"]
+    query = history[-1].content if history else ""
 
     # We modify ChatAgent.generate_response to accept the history (see Step 3)
     raw_json_str = await global_chat_agent_for_graph.generate_response(
-        history, context_docs
+        query, history, context_docs
     )
 
     try:
@@ -103,21 +117,27 @@ async def generate_answer(state: AgentState):
         ai_message = AIMessage(content=raw_json_str)
         return {"answer": structured_data, "messages": [ai_message]}
     except:
-        return {"answer": {"error": "JSON Error"}, "messages": [AIMessage(content=raw_json_str)]}
+        return {
+            "answer": {"error": "JSON Error"},
+            "messages": [AIMessage(content=raw_json_str)],
+        }
 
 
 # Example of how to invoke and see the result
 async def test_run():
-    inputs = {"question": "Dame un resumen de la extencion 1055", "user_department": "General"}
+    inputs = {
+        "question": "Dame un resumen de la extension 1055",
+        "user_department": "General",
+    }
     final_state = await app_audio_graph.ainvoke(inputs)
-    
+
     ans = final_state["answer"]
     print(f"Empleado: {ans.get('nombre_empleado')}")
     print(f"Resumen: {ans.get('sumario')}")
 
+
 if __name__ == "__main__":
     asyncio.run(test_run())
-
 
 
 # --- Graph Construction ---
