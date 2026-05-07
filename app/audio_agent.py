@@ -102,7 +102,7 @@ def retrieve_conversations(state: AgentState):
         extension=ext_match.group(0) if ext_match else None,
         date=date_match.group(0) if date_match else None,
         recipient=recipient_match.group(0) if recipient_match else None,
-        k=60
+        k=5
     )
 
     return {"context": conversations}

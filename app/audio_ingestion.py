@@ -214,8 +214,6 @@ class KnowledgeBaseIndexer:
             }
         return {}
 
-
-
     def index_file(self, file_path):
         print(f"Transcribing and Indexing Audio: {file_path.name}")
         try:
@@ -223,46 +221,62 @@ class KnowledgeBaseIndexer:
             file_meta = self.extract_metadata_from_name(file_path.name)
             category = self.get_category_from_path(file_path)
 
-            (
-                self.supabase.schema(self.db_schema)
-                .table(self.db_table)
-                .delete()
-                .eq("metadata->>filepath", str(file_path))
-                .execute()
-            )
-
+            # --- SCOPED TO THIS FILE ONLY ---
+            combined_text = ""
             chunks_to_insert = []
+            char_threshold = 1200 # Roughly 200-300 words per chunk
+            
             for item in result.document.texts:
-                text_content = item.text.strip()
-                if not text_content or len(text_content) < 20:
-                    continue
+                text_line = item.text.strip()
+                if not text_line: continue
+                
+                combined_text += text_line + " "
+                
+                # Once this specific file's buffer hits the limit:
+                if len(combined_text) >= char_threshold:
+                    vector = self.embedder.get_embedding(combined_text)
+                    if vector:
+                        chunks_to_insert.append({
+                            "content": combined_text.strip(),
+                            "embedding": vector,
+                            "metadata": {
+                                "filepath": str(file_path),
+                                "filename": file_path.name,
+                                "category": category,
+                                **file_meta # Employee name, ext, etc.
+                            }
+                        })
+                    # Clear the buffer for the NEXT chunk of the SAME file
+                    combined_text = "" 
 
-                vector = self.embedder.get_embedding(text_content)
-                if not vector:
-                    continue
+            # --- HANDLE REMAINING TEXT FOR THIS FILE ---
+            # After the loop, if there's anything left (even if it's under 1200 chars),
+            # we must save it as the final chunk for THIS file.
+            
+            if combined_text.strip():
+                vector = self.embedder.get_embedding(combined_text)
+                if vector:
+                    chunks_to_insert.append({
+                        "content": combined_text.strip(),
+                        "embedding": vector,
+                        "metadata": {
+                            "filepath": str(file_path),
+                            "filename": file_path.name,
+                            "category": category,
+                            **file_meta
+                        }
+                    })
 
-                payload = {
-                    "content": text_content,
-                    "metadata": {
-                        "filepath": str(file_path),
-                        "filename": file_path.name,
-                        "category": category,
-                        "content_type": "audio_transcript",
-                        **file_meta,
-                    },
-                    "embedding": vector,
-                }
-                chunks_to_insert.append(payload)
-
+            
             if chunks_to_insert:
                 for i in range(0, len(chunks_to_insert), 10):
                     self.supabase.schema(self.db_schema).table(self.db_table).insert(
                         chunks_to_insert[i : i + 10]
                     ).execute()
-                print(f"Indexed {len(chunks_to_insert)} chunks for {file_path.name}")
+                print(f"Finished {file_path.name}: Created {len(chunks_to_insert)} larger chunks.")
 
         except Exception as e:
-            print(f"Failed to process audio {file_path.name}: {e}")
+            print(f"Failed to process {file_path.name}: {e}")
 
     def run_indexer(self, files_to_process=None):
         if files_to_process:
