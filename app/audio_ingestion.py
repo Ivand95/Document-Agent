@@ -252,7 +252,7 @@ class KnowledgeBaseIndexer:
             # --- HANDLE REMAINING TEXT FOR THIS FILE ---
             # After the loop, if there's anything left (even if it's under 1200 chars),
             # we must save it as the final chunk for THIS file.
-            
+
             if combined_text.strip():
                 vector = self.embedder.get_embedding(combined_text)
                 if vector:
@@ -431,6 +431,23 @@ class ChatAgent:
                 print(f"Agent (JSON):\n{json.dumps(parsed, indent=4, ensure_ascii=False)}")
             except:
                 print(f"Agent: {answer}")
+
+
+# --- Scheduled Indexing Execution Flow ---
+def scheduled_audio_indexing():
+    DOWNLOAD_DIR = Path("./downloads_audio")
+
+    # 1. Run SharePoint Sync
+    syncer = SharePointSync(DOWNLOAD_DIR)
+    updated_files = syncer.run()
+
+    # 2. Run Indexer
+    indexer = KnowledgeBaseIndexer(DOWNLOAD_DIR)
+
+    if updated_files:
+        indexer.run_indexer(updated_files)
+    else:
+        print("No new files from SharePoint.")
 
 
 # --- Execution ---
