@@ -214,25 +214,62 @@ class KnowledgeBaseIndexer:
             }
         return {}
 
+    def format_timestamp(self, seconds: float) -> str:
+        """Helper to convert float seconds to MM:SS format."""
+        if seconds is None:
+            return "00:00"
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins:02d}:{secs:02d}"
+
     def index_file(self, file_path):
-        print(f"Transcribing and Indexing Audio: {file_path.name}")
+        print(f"Transcribing with Diarization: {file_path.name}")
         try:
+            # 1. Convert audio
             result = self.converter.convert(file_path)
             file_meta = self.extract_metadata_from_name(file_path.name)
             category = self.get_category_from_path(file_path)
 
-            # --- SCOPED TO THIS FILE ONLY ---
             combined_text = ""
             chunks_to_insert = []
-            char_threshold = 1200 # Roughly 200-300 words per chunk
-            
+            char_threshold = 1500 
+
+            # 2. Iterate through segments
             for item in result.document.texts:
                 text_line = item.text.strip()
                 if not text_line: continue
+
+                # Extract Docling Audio Metadata (Speaker and Timestamps)
+                # Docling stores these in the 'orig' or 'prov' attributes depending on the model
+                speaker = "Unknown"
+                timestamp_str = ""
+
+                # Try to get speaker label if available
+                if hasattr(item, 'label') and item.label:
+                    # Map 'Speaker_0' -> 'Caller', 'Speaker_1' -> 'Receiver' 
+                    # usually speaker 0 is the one who initiated/internal
+                    if file_meta['employee_name'] != "Unknown":
+                        speaker = file_meta['employee_name'] if "0" in str(item.label) else "Cliente"
+                    else:
+                        speaker = "Empleado" if "0" in str(item.label) else "Cliente"
                 
-                combined_text += text_line + " "
+                # Try to get timestamps
+                if hasattr(item, 'prov') and item.prov:
+                    # Accessing the first provision record for timing
+                    prov = item.prov[0]
+                    start = getattr(prov, 'start', 0)
+                    end = getattr(prov, 'end', 0)
+                    timestamp_str = f"[{self.format_timestamp(start)} - {self.format_timestamp(end)}] "
+
+                # 3. Format the line for the LLM
+                # Result: [00:12 - 00:15] Empleado: "How can I help you today?"
+                #formatted_line = f"{timestamp_str}{speaker}: \"{text_line}\"\n"
+                formatted_line = f"{timestamp_str}{speaker}: \"{text_line}\"\n"
+
                 
-                # Once this specific file's buffer hits the limit:
+                combined_text += formatted_line
+                
+                # Grouping logic (Approach 1)
                 if len(combined_text) >= char_threshold:
                     vector = self.embedder.get_embedding(combined_text)
                     if vector:
@@ -243,31 +280,22 @@ class KnowledgeBaseIndexer:
                                 "filepath": str(file_path),
                                 "filename": file_path.name,
                                 "category": category,
-                                **file_meta # Employee name, ext, etc.
+                                "content_type": "audio_transcript_diarized",
+                                **file_meta
                             }
                         })
-                    # Clear the buffer for the NEXT chunk of the SAME file
-                    combined_text = "" 
+                    combined_text = ""
 
-            # --- HANDLE REMAINING TEXT FOR THIS FILE ---
-            # After the loop, if there's anything left (even if it's under 1200 chars),
-            # we must save it as the final chunk for THIS file.
-
+            # 4. Handle remaining text
             if combined_text.strip():
                 vector = self.embedder.get_embedding(combined_text)
                 if vector:
                     chunks_to_insert.append({
                         "content": combined_text.strip(),
                         "embedding": vector,
-                        "metadata": {
-                            "filepath": str(file_path),
-                            "filename": file_path.name,
-                            "category": category,
-                            **file_meta
-                        }
+                        "metadata": { "filepath": str(file_path), **file_meta }
                     })
 
-            
             if chunks_to_insert:
                 for i in range(0, len(chunks_to_insert), 10):
                     self.supabase.schema(self.db_schema).table(self.db_table).insert(
@@ -277,6 +305,7 @@ class KnowledgeBaseIndexer:
 
         except Exception as e:
             print(f"Failed to process {file_path.name}: {e}")
+
 
     def run_indexer(self, files_to_process=None):
         if files_to_process:
