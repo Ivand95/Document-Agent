@@ -15,7 +15,7 @@ from supabase import create_client, Client
 from docling.document_converter import AudioFormatOption, DocumentConverter
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel import asr_model_specs
-from docling.datamodel.pipeline_options import AsrPipelineOptions
+from docling.datamodel.pipeline_options import AsrPipelineOptions, AudioPipelineOptions
 from docling.pipeline.asr_pipeline import AsrPipeline
 import openai
 import google.generativeai as genai
@@ -168,20 +168,23 @@ class SharePointSync:
 # --- Part 2: Audio Indexer ---
 class KnowledgeBaseIndexer:
     def __init__(self, root_dir):
-        # Configure ASR pipeline
-        pipeline_options = AsrPipelineOptions(
-            asr_options=asr_model_specs.WHISPER_SMALL, language="es"
-        )
-        format_options = {
-            InputFormat.AUDIO: AudioFormatOption(
-                pipeline_cls=AsrPipeline,
-                pipeline_options=pipeline_options,
-            )
-        }
         self.root_dir = root_dir
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         self.embedder = global_embedding_service_instance
-        self.converter = DocumentConverter(format_options=format_options)
+        
+        # --- NEW: CONFIGURE AUDIO DIARIZATION ---
+        audio_options = AudioPipelineOptions(
+            do_diarization=True,  # This must be True
+            num_speakers=None      # Set to 2 if you are sure it's always 2 people
+        )
+        
+        # Pass these options to the converter
+        self.converter = DocumentConverter(
+            format_options={
+                InputFormat.WAV: audio_options,
+                InputFormat.MP3: audio_options # Add other formats if needed
+            }
+        )
         self.db_schema = SUPABASE_SCHEMA
         self.db_table = SUPABASE_AUDIO_TABLE
         self.audio_pattern = re.compile(
@@ -223,46 +226,36 @@ class KnowledgeBaseIndexer:
         return f"{mins:02d}:{secs:02d}"
 
     def index_file(self, file_path):
-        print(f"Processing with Diarization: {file_path.name}")
+        print(f"Transcribing with Diarization: {file_path.name}")
         try:
-            # Note: Ensure the converter is set to handle audio
             result = self.converter.convert(file_path)
             file_meta = self.extract_metadata_from_name(file_path.name)
             category = self.get_category_from_path(file_path)
             
             combined_text = ""
             chunks_to_insert = []
-            char_threshold = 1500 
+            char_threshold = 1500
 
             for item in result.document.texts:
-                text_line = item.text.strip()
-                if not text_line: continue
+                # 1. Get Speaker from 'label'
+                # Docling assigns labels like 'speaker_0', 'speaker_1'
+                speaker_label = getattr(item, 'label', 'unknown')
+                
+                # Map to your specific logic
+                if "0" in str(speaker_label):
+                    speaker_name = file_meta.get('employee_name', 'Empleado')
+                else:
+                    speaker_name = "Cliente"
 
-                # Initialize defaults
-                speaker = "Persona" 
-                timestamp = ""
-
-                # 1. Try to extract Speaker (Diarization)
-                # In Docling 2.x, speaker info is often in the 'orig' or 'extra' attributes
-                if hasattr(item, 'orig') and isinstance(item.orig, dict):
-                    # Some models return 'speaker_id' or 'speaker'
-                    spk_id = item.orig.get("speaker") or item.orig.get("speaker_id")
-                    if spk_id is not None:
-                        # Map Speaker 0 to Employee Name, others to Cliente
-                        speaker = file_meta.get('employee_name', 'Empleado') if str(spk_id) == "0" else "Cliente"
-
-                # 2. Try to extract Timestamps
-                # Check for 'prov' (Provisional/Origin data)
+                # 2. Get Timestamps from 'prov'
+                timestamp_str = ""
                 if hasattr(item, 'prov') and item.prov:
-                    p = item.prov[0]
-                    # Check for 'start' and 'end' attributes
-                    start = getattr(p, 'start', None)
-                    end = getattr(p, 'end', None)
-                    if start is not None:
-                        timestamp = f"[{self.format_timestamp(start)} - {self.format_timestamp(end)}] "
+                    start = getattr(item.prov[0], 'start', 0)
+                    end = getattr(item.prov[0], 'end', 0)
+                    timestamp_str = f"[{self.format_timestamp(start)} - {self.format_timestamp(end)}] "
 
-                # 3. Build the line
-                formatted_line = f"{timestamp}{speaker}: {text_line}\n"
+                # 3. Format line
+                formatted_line = f"{timestamp_str}{speaker_name}: {item.text.strip()}\n"
                 combined_text += formatted_line
 
                 
