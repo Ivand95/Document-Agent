@@ -178,14 +178,13 @@ class KnowledgeBaseIndexer:
         # Initialize Pyannote Pipeline
         hf_token = os.getenv("HF_TOKEN")
         self.diarization_pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token
+            "pyannote/speaker-diarization-3.1", use_auth_token=hf_token
         )
-        
+
         # Move pipeline to GPU if available
         if torch.cuda.is_available():
             self.diarization_pipeline.to(torch.device("cuda"))
-        
+
         asr_options = AsrPipelineOptions(
             do_diarization=True,
             num_speakers=None,
@@ -223,105 +222,80 @@ class KnowledgeBaseIndexer:
             return {
                 "employee_name": match.group(2) if match.group(2) else "Unknown",
                 "extension": match.group(3),
-                "phone_number": match.group(4), # This is the 'Recipient'
+                "phone_number": match.group(4),  # This is the 'Recipient'
                 "timestamp_raw": raw_ts,
-                "date_formatted": formatted_date 
+                "date_formatted": formatted_date,
             }
         return {}
 
-    def format_timestamp(self, seconds: float) -> str:
-        """Helper to convert float seconds to MM:SS format."""
-        if seconds is None:
-            return "00:00"
-        mins = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{mins:02d}:{secs:02d}"
-
-    def get_speaker_at_time(self, diarization_result, start_time):
-        """Finds which speaker was active at a specific second."""
-        for turn, _, speaker in diarization_result.itertracks(yield_label=True):
-            if turn.start <= start_time <= turn.end:
-                return speaker
-        return "Unknown"
-
     def index_file(self, file_path):
-        print(f"Diarizing with Pyannote: {file_path.name}")
+        print(f"Transcribing and Indexing Audio: {file_path.name}")
         try:
-            # 1. Run Pyannote Diarization Pre-processing
-            # This generates the "Who spoke when" map
-            diarization = self.diarization_pipeline(str(file_path))
-
-            # 2. Run Docling Transcription
             result = self.converter.convert(file_path)
             file_meta = self.extract_metadata_from_name(file_path.name)
             category = self.get_category_from_path(file_path)
 
+            # --- SCOPED TO THIS FILE ONLY ---
             combined_text = ""
             chunks_to_insert = []
-            char_threshold = 1500 
+            char_threshold = 1200  # Roughly 200-300 words per chunk
 
             for item in result.document.texts:
                 text_line = item.text.strip()
-                if not text_line: continue
+                if not text_line:
+                    continue
 
-                # 3. Correlate Docling Timestamp with Pyannote Speaker
-                speaker_id = "SPEAKER_00" # Default
-                timestamp_label = ""
-                
-                if hasattr(item, 'prov') and item.prov:
-                    start_time = getattr(item.prov[0], 'start', 0)
-                    end_time = getattr(item.prov[0], 'end', 0)
-                    
-                    # Use Pyannote map to find the speaker
-                    speaker_id = self.get_speaker_at_time(diarization, start_time)
-                    timestamp_label = f"[{self.format_timestamp(start_time)} - {self.format_timestamp(end_time)}] "
+                combined_text += text_line + " "
 
-                # 4. Map Speaker ID to Employee/Client
-                # Pyannote usually labels as SPEAKER_00, SPEAKER_01, etc.
-                # Logic: If speaker_id has '00', it's likely the internal extension
-                if "00" in str(speaker_id):
-                    speaker_name = file_meta.get('employee_name', 'Empleado')
-                else:
-                    speaker_name = "Cliente"
-
-                formatted_line = f"{timestamp_label}{speaker_name}: {text_line}\n"
-                combined_text += formatted_line
-
-                # 5. Grouping Logic
+                # Once this specific file's buffer hits the limit:
                 if len(combined_text) >= char_threshold:
                     vector = self.embedder.get_embedding(combined_text)
                     if vector:
-                        chunks_to_insert.append({
+                        chunks_to_insert.append(
+                            {
+                                "content": combined_text.strip(),
+                                "embedding": vector,
+                                "metadata": {
+                                    "filepath": str(file_path),
+                                    "filename": file_path.name,
+                                    "category": category,
+                                    **file_meta,  # Employee name, ext, etc.
+                                },
+                            }
+                        )
+                    # Clear the buffer for the NEXT chunk of the SAME file
+                    combined_text = ""
+
+            # --- HANDLE REMAINING TEXT FOR THIS FILE ---
+            # After the loop, if there's anything left (even if it's under 1200 chars),
+            # we must save it as the final chunk for THIS file.
+
+            if combined_text.strip():
+                vector = self.embedder.get_embedding(combined_text)
+                if vector:
+                    chunks_to_insert.append(
+                        {
                             "content": combined_text.strip(),
                             "embedding": vector,
                             "metadata": {
                                 "filepath": str(file_path),
                                 "filename": file_path.name,
                                 "category": category,
-                                "content_type": "audio_transcript_pyannote",
-                                **file_meta
-                            }
-                        })
-                    combined_text = ""
-
-            # --- Handle Tail and Insert (Same as your current script) ---
-            if combined_text.strip():
-                vector = self.embedder.get_embedding(combined_text)
-                if vector:
-                    chunks_to_insert.append({
-                        "content": combined_text.strip(),
-                        "embedding": vector,
-                        "metadata": { "filepath": str(file_path), **file_meta }
-                    })
+                                **file_meta,
+                            },
+                        }
+                    )
 
             if chunks_to_insert:
                 # Cleanup existing
-                (self.supabase.schema(self.db_schema)
+                (
+                    self.supabase.schema(self.db_schema)
                     .table(self.db_table)
                     .delete()
                     .eq("metadata->>filepath", str(file_path))
-                    .execute())
-                
+                    .execute()
+                )
+
                 # Insert
                 for i in range(0, len(chunks_to_insert), 10):
                     self.supabase.schema(self.db_schema).table(self.db_table).insert(
@@ -429,7 +403,10 @@ class ChatAgent:
         """
 
         messages = [
-            {"role": "system", "content": system_prompt + f"\nContexto de documentos:\n{context_text}"}
+            {
+                "role": "system",
+                "content": system_prompt + f"\nContexto de documentos:\n{context_text}",
+            }
         ]
 
         # Add the conversation history
@@ -440,13 +417,12 @@ class ChatAgent:
         # 3. Call LLM
         if LLM_SERVICE == "openai":
             response = await asyncio.to_thread(
-            self.chat_client.chat.completions.create,
-            model="gpt-4o",
-            response_format={"type": "json_object"},
-            messages=messages
+                self.chat_client.chat.completions.create,
+                model="gpt-4o",
+                response_format={"type": "json_object"},
+                messages=messages,
             )
             return response.choices[0].message.content
-
 
         elif LLM_SERVICE == "gemini":
             # Run the asynchronous Gemini call in a background thread
@@ -480,7 +456,9 @@ class ChatAgent:
             try:
                 # Pretty print if it's a valid JSON string
                 parsed = json.loads(answer.replace("```json", "").replace("```", ""))
-                print(f"Agent (JSON):\n{json.dumps(parsed, indent=4, ensure_ascii=False)}")
+                print(
+                    f"Agent (JSON):\n{json.dumps(parsed, indent=4, ensure_ascii=False)}"
+                )
             except:
                 print(f"Agent: {answer}")
 
