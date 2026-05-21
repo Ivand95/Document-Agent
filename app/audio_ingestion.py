@@ -188,6 +188,12 @@ class KnowledgeBaseIndexer:
             r"^(\[(.*?)\])?_(\d{3,4})-(\d{7,15})_(\d+).*?\.wav$", re.IGNORECASE
         )
 
+        if LLM_SERVICE == "openai":
+            self.chat_client = openai.OpenAI(api_key=LLM_API_KEY)
+        elif LLM_SERVICE == "gemini":
+            genai.configure(api_key=LLM_API_KEY)
+            self.chat_client = None
+
     def get_category_from_path(self, file_path):
         try:
             relative_path = file_path.relative_to(self.root_dir)
@@ -230,14 +236,14 @@ class KnowledgeBaseIndexer:
         - resolution_status (Resuelto, Pendiente)
         - summary (Resumen de 2 oraciones)
         
-        Texto: {full_text[:6000]}""" # Limit text to stay within token bounds
+        Texto: {full_text[:6000]}"""  # Limit text to stay within token bounds
 
         # Call your LLM (using the same logic as ChatAgent)
         response = await asyncio.to_thread(
             self.chat_client.chat.completions.create,
-            model="gpt-4o-mini", # Use a smaller/cheaper model for this
+            model="gpt-4o-mini",  # Use a smaller/cheaper model for this
             response_format={"type": "json_object"},
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
         return json.loads(response.choices[0].message.content)
 
@@ -247,32 +253,34 @@ class KnowledgeBaseIndexer:
             result = self.converter.convert(file_path)
             # 1. Combine all text to get a full transcript for analysis
             full_transcript = " ".join([item.text for item in result.document.texts])
-            
+
             # 2. Get the analysis metrics
             analysis = await self.analyze_full_transcript(full_transcript)
-            
+
             file_meta = self.extract_metadata_from_name(file_path.name)
             category = self.get_category_from_path(file_path)
 
             chunks_to_insert = []
             combined_text = ""
-            
+
             for item in result.document.texts:
                 combined_text += item.text + " "
                 if len(combined_text) >= 1200:
                     vector = self.embedder.get_embedding(combined_text)
                     if vector:
-                        chunks_to_insert.append({
-                            "content": combined_text.strip(),
-                            "embedding": vector,
-                            "metadata": {
-                                "filepath": str(file_path),
-                                "filename": file_path.name,
-                                "category": category,
-                                **file_meta,
-                                **analysis  # <--- INJECT ANALYSIS INTO METADATA
+                        chunks_to_insert.append(
+                            {
+                                "content": combined_text.strip(),
+                                "embedding": vector,
+                                "metadata": {
+                                    "filepath": str(file_path),
+                                    "filename": file_path.name,
+                                    "category": category,
+                                    **file_meta,
+                                    **analysis,  # <--- INJECT ANALYSIS INTO METADATA
+                                },
                             }
-                        })
+                        )
                     combined_text = ""
 
             # 4. Handle remaining text
@@ -508,7 +516,7 @@ if __name__ == "__main__":
 
     indexer = KnowledgeBaseIndexer(DOWNLOAD_DIR)
     if updated_files:
-        indexer.run_indexer(updated_files)
+        asyncio.run(indexer.run_indexer(updated_files))
     else:
         print("No new audio files. Running full scan...")
-        indexer.run_indexer()
+        asyncio.run(indexer.run_indexer())
