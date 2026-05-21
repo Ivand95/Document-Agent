@@ -281,6 +281,28 @@ class KnowledgeBaseIndexer:
                                 "filepath": str(file_path),
                                 "filename": file_path.name,
                                 "category": category,
+                                **file_meta,  # Employee name, ext, etc.
+                            },
+                        }
+                    )
+                    # Clear the buffer for the NEXT chunk of the SAME file
+                    combined_text = ""
+
+            # --- HANDLE REMAINING TEXT FOR THIS FILE ---
+            # After the loop, if there's anything left (even if it's under 1200 chars),
+            # we must save it as the final chunk for THIS file.
+
+            if combined_text.strip():
+                vector = self.embedder.get_embedding(combined_text)
+                if vector:
+                    chunks_to_insert.append(
+                        {
+                            "content": combined_text.strip(),
+                            "embedding": vector,
+                            "metadata": {
+                                "filepath": str(file_path),
+                                "filename": file_path.name,
+                                "category": category,
                                 **file_meta,
                             },
                         }
