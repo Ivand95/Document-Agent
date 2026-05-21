@@ -4,7 +4,7 @@ import asyncio
 import re
 import json
 import operator
-from typing import Annotated, List, Dict
+from typing import Annotated, List, Dict, Optional
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
 
@@ -121,10 +121,21 @@ async def generate_answer(state: AgentState):
     )
 
     try:
-        structured_data = json.loads(raw_json_str)
-        # Create an AIMessage to append to the graph state
-        ai_message = AIMessage(content=raw_json_str)
-        return {"answer": structured_data, "messages": [ai_message]}
+        data = json.loads(raw_json_str.strip().replace("```json", "").replace("```", ""))
+        
+        # 2. Extract metrics from metadata of the first relevant document
+        # This gives the agent "real" data even if the LLM hallucinations
+        first_doc_meta = context_docs[0].metadata if context_docs else {}
+
+        return {
+            "answer": data,
+            "messages": [AIMessage(content=raw_json_str)],
+            "sentiment_score": first_doc_meta.get("sentiment_score", data.get("sentiment_score")),
+            "call_purpose": first_doc_meta.get("call_purpose", data.get("call_purpose")),
+            "resolution_status": first_doc_meta.get("resolution_status", data.get("resolution_status")),
+            "action_items": data.get("action_items", [])
+        }
+        
     except:
         return {
             "answer": {"error": "JSON Error"},

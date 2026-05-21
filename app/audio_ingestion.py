@@ -222,74 +222,57 @@ class KnowledgeBaseIndexer:
         secs = int(seconds % 60)
         return f"{mins:02d}:{secs:02d}"
 
-    def index_file(self, file_path):
-        print(f"Transcribing with Diarization: {file_path.name}")
+    async def analyze_full_transcript(self, full_text):
+        """Quickly analyzes the whole call to get sentiment/purpose/etc."""
+        prompt = f"""Analiza la siguiente transcripción y devuelve un objeto JSON con:
+        - sentiment_score (1-10)
+        - call_purpose (Ventas, Soporte, Facturación, Queja, Otro)
+        - resolution_status (Resuelto, Pendiente)
+        - summary (Resumen de 2 oraciones)
+        
+        Texto: {full_text[:6000]}""" # Limit text to stay within token bounds
+
+        # Call your LLM (using the same logic as ChatAgent)
+        response = await asyncio.to_thread(
+            self.chat_client.chat.completions.create,
+            model="gpt-4o-mini", # Use a smaller/cheaper model for this
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return json.loads(response.choices[0].message.content)
+
+    async def index_file(self, file_path):
+        print(f"Processing and Analyzing: {file_path.name}")
         try:
-            # 1. Convert audio
             result = self.converter.convert(file_path)
+            # 1. Combine all text to get a full transcript for analysis
+            full_transcript = " ".join([item.text for item in result.document.texts])
+            
+            # 2. Get the analysis metrics
+            analysis = await self.analyze_full_transcript(full_transcript)
+            
             file_meta = self.extract_metadata_from_name(file_path.name)
             category = self.get_category_from_path(file_path)
 
-            combined_text = ""
             chunks_to_insert = []
-            char_threshold = 1500
-
-            # 2. Iterate through segments
+            combined_text = ""
+            
             for item in result.document.texts:
-                text_line = item.text.strip()
-                if not text_line:
-                    continue
-
-                # Extract Docling Audio Metadata (Speaker and Timestamps)
-                # Docling stores these in the 'orig' or 'prov' attributes depending on the model
-                speaker = "Unknown"
-                timestamp_str = ""
-
-                # Try to get speaker label if available
-                if hasattr(item, "label") and item.label:
-                    # Map 'Speaker_0' -> 'Caller', 'Speaker_1' -> 'Receiver'
-                    # usually speaker 0 is the one who initiated/internal
-                    if file_meta["employee_name"] != "Unknown":
-                        speaker = (
-                            file_meta["employee_name"]
-                            if "0" in str(item.label)
-                            else "Cliente"
-                        )
-                    else:
-                        speaker = "Empleado" if "0" in str(item.label) else "Cliente"
-
-                # Try to get timestamps
-                if hasattr(item, "prov") and item.prov:
-                    # Accessing the first provision record for timing
-                    prov = item.prov[0]
-                    start = getattr(prov, "start", 0)
-                    end = getattr(prov, "end", 0)
-                    timestamp_str = f"[{self.format_timestamp(start)} - {self.format_timestamp(end)}] "
-
-                # 3. Format the line for the LLM
-                # Result: [00:12 - 00:15] Empleado: "How can I help you today?"
-                # formatted_line = f"{timestamp_str}{speaker}: \"{text_line}\"\n"
-                formatted_line = f'{timestamp_str}{speaker}: "{text_line}"\n'
-
-                combined_text += formatted_line
-
-                # Grouping logic (Approach 1)
-                if len(combined_text) >= char_threshold:
+                combined_text += item.text + " "
+                if len(combined_text) >= 1200:
                     vector = self.embedder.get_embedding(combined_text)
                     if vector:
-                        chunks_to_insert.append(
-                            {
-                                "content": combined_text.strip(),
-                                "embedding": vector,
-                                "metadata": {
-                                    "filepath": str(file_path),
-                                    "filename": file_path.name,
-                                    "category": category,
-                                    "content_type": "audio_transcript_diarized",
-                                    **file_meta,
-                                },
+                        chunks_to_insert.append({
+                            "content": combined_text.strip(),
+                            "embedding": vector,
+                            "metadata": {
+                                "filepath": str(file_path),
+                                "filename": file_path.name,
+                                "category": category,
+                                **file_meta,
+                                **analysis  # <--- INJECT ANALYSIS INTO METADATA
                             }
-                        )
+                        })
                     combined_text = ""
 
             # 4. Handle remaining text
@@ -316,14 +299,14 @@ class KnowledgeBaseIndexer:
         except Exception as e:
             print(f"Failed to process {file_path.name}: {e}")
 
-    def run_indexer(self, files_to_process=None):
+    async def run_indexer(self, files_to_process=None):
         if files_to_process:
             for f in files_to_process:
-                self.index_file(f)
+                await self.index_file(f)
         else:
             for f in self.root_dir.rglob("*.wav"):
                 if f.is_file() and self.audio_pattern.match(f.name):
-                    self.index_file(f)
+                    await self.index_file(f)
 
 
 # --- Part 3: Interactive Chat Agent Audio ---
@@ -501,7 +484,7 @@ class ChatAgent:
 
 
 # --- Scheduled Indexing Execution Flow ---
-def scheduled_audio_indexing():
+async def scheduled_audio_indexing():
     DOWNLOAD_DIR = Path("./downloads_audio")
 
     # 1. Run SharePoint Sync
@@ -512,7 +495,7 @@ def scheduled_audio_indexing():
     indexer = KnowledgeBaseIndexer(DOWNLOAD_DIR)
 
     if updated_files:
-        indexer.run_indexer(updated_files)
+        await indexer.run_indexer(updated_files)
     else:
         print("No new files from SharePoint.")
 
