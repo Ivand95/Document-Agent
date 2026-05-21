@@ -172,17 +172,15 @@ class KnowledgeBaseIndexer:
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         self.embedder = global_embedding_service_instance
         
-        # --- NEW: CONFIGURE AUDIO DIARIZATION ---
-        audio_options = AudioPipelineOptions(
-            do_diarization=True,  # This must be True
-            num_speakers=None      # Set to 2 if you are sure it's always 2 people
+        asr_options = AsrPipelineOptions(
+            do_diarization=True,
+            num_speakers=None,
         )
-        
-        # Pass these options to the converter
+
         self.converter = DocumentConverter(
             format_options={
-                InputFormat.WAV: audio_options,
-                InputFormat.MP3: audio_options # Add other formats if needed
+                InputFormat.WAV: AudioFormatOption(pipeline_options=asr_options),
+                InputFormat.MP3: AudioFormatOption(pipeline_options=asr_options),
             }
         )
         self.db_schema = SUPABASE_SCHEMA
@@ -237,25 +235,43 @@ class KnowledgeBaseIndexer:
             char_threshold = 1500
 
             for item in result.document.texts:
-                # 1. Get Speaker from 'label'
-                # Docling assigns labels like 'speaker_0', 'speaker_1'
-                speaker_label = getattr(item, 'label', 'unknown')
-                
-                # Map to your specific logic
-                if "0" in str(speaker_label):
-                    speaker_name = file_meta.get('employee_name', 'Empleado')
-                else:
-                    speaker_name = "Cliente"
+                text = getattr(item, 'text', None)
+                if not text or not text.strip():
+                    continue
 
-                # 2. Get Timestamps from 'prov'
-                timestamp_str = ""
-                if hasattr(item, 'prov') and item.prov:
-                    start = getattr(item.prov[0], 'start', 0)
-                    end = getattr(item.prov[0], 'end', 0)
-                    timestamp_str = f"[{self.format_timestamp(start)} - {self.format_timestamp(end)}] "
+                # Speaker label lives in provenance for diarized audio, not item.label
+                # (item.label is a DocItemLabel enum like TEXT/TITLE, not a speaker id)
+                speaker_raw = None
+                start = 0.0
+                end = 0.0
 
-                # 3. Format line
-                formatted_line = f"{timestamp_str}{speaker_name}: {item.text.strip()}\n"
+                prov = getattr(item, 'prov', None)
+                if prov:
+                    p = prov[0] if isinstance(prov, (list, tuple)) else prov
+                    speaker_raw = (
+                        getattr(p, 'speaker_label', None)
+                        or getattr(p, 'speaker', None)
+                        or getattr(p, 'speaker_id', None)
+                    )
+                    start = getattr(p, 'start', None) or getattr(p, 'start_time', None) or 0.0
+                    end = getattr(p, 'end', None) or getattr(p, 'end_time', None) or 0.0
+
+                # Map speaker_00 / speaker_0 / SPEAKER_00 → employee, anything else → client
+                speaker_str = str(speaker_raw).lower() if speaker_raw else ""
+                is_first_speaker = (
+                    speaker_str in ("", "unknown")
+                    or speaker_str.endswith("_00")
+                    or speaker_str.endswith("_0")
+                    or speaker_str == "speaker_0"
+                )
+                speaker_name = file_meta.get('employee_name', 'Empleado') if is_first_speaker else "Cliente"
+
+                timestamp_str = (
+                    f"[{self.format_timestamp(start)} - {self.format_timestamp(end)}] "
+                    if (start or end) else ""
+                )
+
+                formatted_line = f"{timestamp_str}{speaker_name}: {text.strip()}\n"
                 combined_text += formatted_line
 
                 
@@ -276,14 +292,20 @@ class KnowledgeBaseIndexer:
                         })
                     combined_text = ""
 
-            # 4. Handle remaining text
+            # Handle remaining text
             if combined_text.strip():
                 vector = self.embedder.get_embedding(combined_text)
                 if vector:
                     chunks_to_insert.append({
                         "content": combined_text.strip(),
                         "embedding": vector,
-                        "metadata": { "filepath": str(file_path), **file_meta }
+                        "metadata": {
+                            "filepath": str(file_path),
+                            "filename": file_path.name,
+                            "category": category,
+                            "content_type": "audio_transcript_diarized",
+                            **file_meta
+                        }
                     })
 
             if chunks_to_insert:
@@ -393,8 +415,6 @@ class ChatAgent:
             "summary": "The conversation between John Doe and Jane Smith was about the project XYZ..."
         }
         """
-
-        full_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
 
         messages = [
             {"role": "system", "content": system_prompt + f"\nContexto de documentos:\n{context_text}"}
