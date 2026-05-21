@@ -234,7 +234,8 @@ class KnowledgeBaseIndexer:
         - sentiment_score (1-10)
         - call_purpose (Ventas, Soporte, Facturación, Queja, Otro)
         - resolution_status (Resuelto, Pendiente)
-        - summary (Resumen de 2 oraciones)
+        - summary (Resumen de 3-5 oraciones)
+        - recommendation (Recomendación para incrementar la calidad de la llamada.)
         
         Texto: {full_text[:6000]}"""  # Limit text to stay within token bounds
 
@@ -374,7 +375,7 @@ class ChatAgent:
         # 2. Build Messages for OpenAI
         # Start with the System Prompt
 
-        system_prompt = """You are an expert quality assurance and conversation analist. 
+        system_prompt = """You are an expert quality assurance and conversation analist for Cooperativa Barcelona. 
         Your objective is to analyze audio transcriptions for the company and extract metrics in JSON format. You always answer in JSON format.
         
         Guidelines:
@@ -389,6 +390,7 @@ class ChatAgent:
         9. Always maintain a polite and helpful tone.
         10. Always return a summary of the conversation, call, or transcript in the answer.
         
+        
 
         METRICS TO EXTRACT:
 
@@ -398,6 +400,7 @@ class ChatAgent:
         - 'resolution_status': Was the problem resolved? (Resolved / Pending / Unavailable).
         - 'action_items': List of pending tasks mentioned.
         - 'summary': A 3-5 sentence executive summary of the call.
+        - 'recommendation': A recommendation given to increase sentiment_score.
 
         Desired JSON Output:
         {
@@ -411,6 +414,7 @@ class ChatAgent:
             "call_purpose": "...",
             "resolution_status": "...",
             "action_items": [],
+            "recommendation": "..."
         }
 
         Example:
@@ -425,6 +429,7 @@ class ChatAgent:
             "call_purpose": "...",
             "resolution_status": "...",
             "action_items": [],
+            "recommendation": "..."
         }
         """
 

@@ -135,7 +135,7 @@ async def generate_answer(state: AgentState):
             "resolution_status": first_doc_meta.get("resolution_status", data.get("resolution_status")),
             "action_items": data.get("action_items", [])
         }
-        
+
     except:
         return {
             "answer": {"error": "JSON Error"},
