@@ -7,8 +7,6 @@ import asyncio
 import dateutil.parser
 from pathlib import Path
 from dotenv import load_dotenv
-import torch
-
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
@@ -17,11 +15,10 @@ from supabase import create_client, Client
 from docling.document_converter import AudioFormatOption, DocumentConverter
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel import asr_model_specs
-from docling.datamodel.pipeline_options import AsrPipelineOptions, AudioPipelineOptions
+from docling.datamodel.pipeline_options import AsrPipelineOptions
 from docling.pipeline.asr_pipeline import AsrPipeline
 import openai
 import google.generativeai as genai
-from pyannote.audio import Pipeline
 
 from langchain_core.documents import Document
 from config import (
@@ -171,31 +168,20 @@ class SharePointSync:
 # --- Part 2: Audio Indexer ---
 class KnowledgeBaseIndexer:
     def __init__(self, root_dir):
+        # Configure ASR pipeline
+        pipeline_options = AsrPipelineOptions(
+            asr_options=asr_model_specs.WHISPER_TURBO, language="es"
+        )
+        format_options = {
+            InputFormat.AUDIO: AudioFormatOption(
+                pipeline_cls=AsrPipeline,
+                pipeline_options=pipeline_options,
+            )
+        }
         self.root_dir = root_dir
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         self.embedder = global_embedding_service_instance
-
-        # Initialize Pyannote Pipeline
-        hf_token = os.getenv("HF_TOKEN")
-        self.diarization_pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1", use_auth_token=hf_token
-        )
-
-        # Move pipeline to GPU if available
-        if torch.cuda.is_available():
-            self.diarization_pipeline.to(torch.device("cuda"))
-
-        asr_options = AsrPipelineOptions(
-            do_diarization=True,
-            num_speakers=None,
-        )
-
-        self.converter = DocumentConverter(
-            format_options={
-                InputFormat.WAV: AudioFormatOption(pipeline_options=asr_options),
-                InputFormat.MP3: AudioFormatOption(pipeline_options=asr_options),
-            }
-        )
+        self.converter = DocumentConverter(format_options=format_options)
         self.db_schema = SUPABASE_SCHEMA
         self.db_table = SUPABASE_AUDIO_TABLE
         self.audio_pattern = re.compile(
@@ -228,26 +214,66 @@ class KnowledgeBaseIndexer:
             }
         return {}
 
+    def format_timestamp(self, seconds: float) -> str:
+        """Helper to convert float seconds to MM:SS format."""
+        if seconds is None:
+            return "00:00"
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins:02d}:{secs:02d}"
+
     def index_file(self, file_path):
-        print(f"Transcribing and Indexing Audio: {file_path.name}")
+        print(f"Transcribing with Diarization: {file_path.name}")
         try:
+            # 1. Convert audio
             result = self.converter.convert(file_path)
             file_meta = self.extract_metadata_from_name(file_path.name)
             category = self.get_category_from_path(file_path)
 
-            # --- SCOPED TO THIS FILE ONLY ---
             combined_text = ""
             chunks_to_insert = []
-            char_threshold = 1200  # Roughly 200-300 words per chunk
+            char_threshold = 1500
 
+            # 2. Iterate through segments
             for item in result.document.texts:
                 text_line = item.text.strip()
                 if not text_line:
                     continue
 
-                combined_text += text_line + " "
+                # Extract Docling Audio Metadata (Speaker and Timestamps)
+                # Docling stores these in the 'orig' or 'prov' attributes depending on the model
+                speaker = "Unknown"
+                timestamp_str = ""
 
-                # Once this specific file's buffer hits the limit:
+                # Try to get speaker label if available
+                if hasattr(item, "label") and item.label:
+                    # Map 'Speaker_0' -> 'Caller', 'Speaker_1' -> 'Receiver'
+                    # usually speaker 0 is the one who initiated/internal
+                    if file_meta["employee_name"] != "Unknown":
+                        speaker = (
+                            file_meta["employee_name"]
+                            if "0" in str(item.label)
+                            else "Cliente"
+                        )
+                    else:
+                        speaker = "Empleado" if "0" in str(item.label) else "Cliente"
+
+                # Try to get timestamps
+                if hasattr(item, "prov") and item.prov:
+                    # Accessing the first provision record for timing
+                    prov = item.prov[0]
+                    start = getattr(prov, "start", 0)
+                    end = getattr(prov, "end", 0)
+                    timestamp_str = f"[{self.format_timestamp(start)} - {self.format_timestamp(end)}] "
+
+                # 3. Format the line for the LLM
+                # Result: [00:12 - 00:15] Empleado: "How can I help you today?"
+                # formatted_line = f"{timestamp_str}{speaker}: \"{text_line}\"\n"
+                formatted_line = f'{timestamp_str}{speaker}: "{text_line}"\n'
+
+                combined_text += formatted_line
+
+                # Grouping logic (Approach 1)
                 if len(combined_text) >= char_threshold:
                     vector = self.embedder.get_embedding(combined_text)
                     if vector:
@@ -259,17 +285,14 @@ class KnowledgeBaseIndexer:
                                     "filepath": str(file_path),
                                     "filename": file_path.name,
                                     "category": category,
-                                    **file_meta,  # Employee name, ext, etc.
+                                    "content_type": "audio_transcript_diarized",
+                                    **file_meta,
                                 },
                             }
                         )
-                    # Clear the buffer for the NEXT chunk of the SAME file
                     combined_text = ""
 
-            # --- HANDLE REMAINING TEXT FOR THIS FILE ---
-            # After the loop, if there's anything left (even if it's under 1200 chars),
-            # we must save it as the final chunk for THIS file.
-
+            # 4. Handle remaining text
             if combined_text.strip():
                 vector = self.embedder.get_embedding(combined_text)
                 if vector:
@@ -277,53 +300,18 @@ class KnowledgeBaseIndexer:
                         {
                             "content": combined_text.strip(),
                             "embedding": vector,
-                            "metadata": {
-                                "filepath": str(file_path),
-                                "filename": file_path.name,
-                                "category": category,
-                                **file_meta,  # Employee name, ext, etc.
-                            },
-                        }
-                    )
-                    # Clear the buffer for the NEXT chunk of the SAME file
-                    combined_text = ""
-
-            # --- HANDLE REMAINING TEXT FOR THIS FILE ---
-            # After the loop, if there's anything left (even if it's under 1200 chars),
-            # we must save it as the final chunk for THIS file.
-
-            if combined_text.strip():
-                vector = self.embedder.get_embedding(combined_text)
-                if vector:
-                    chunks_to_insert.append(
-                        {
-                            "content": combined_text.strip(),
-                            "embedding": vector,
-                            "metadata": {
-                                "filepath": str(file_path),
-                                "filename": file_path.name,
-                                "category": category,
-                                **file_meta,
-                            },
+                            "metadata": {"filepath": str(file_path), **file_meta},
                         }
                     )
 
             if chunks_to_insert:
-                # Cleanup existing
-                (
-                    self.supabase.schema(self.db_schema)
-                    .table(self.db_table)
-                    .delete()
-                    .eq("metadata->>filepath", str(file_path))
-                    .execute()
-                )
-
-                # Insert
                 for i in range(0, len(chunks_to_insert), 10):
                     self.supabase.schema(self.db_schema).table(self.db_table).insert(
                         chunks_to_insert[i : i + 10]
                     ).execute()
-                print(f"Finished {file_path.name} with Pyannote Diarization.")
+                print(
+                    f"Finished {file_path.name}: Created {len(chunks_to_insert)} larger chunks."
+                )
 
         except Exception as e:
             print(f"Failed to process {file_path.name}: {e}")
@@ -384,24 +372,41 @@ class ChatAgent:
             return []
 
     async def generate_response(self, query, message_history, context_chunks):
-        # 1. Prepare Context as before
-        context_text = "\n\n".join([doc.page_content for doc in context_chunks])
+        # Format the context to help the AI infer roles
+        context_text = ""
+        for doc in context_chunks:
+            meta = doc.metadata
+            context_text += f"\n--- LLAMADA DE: {meta.get('employee_name')} (Ext: {meta.get('extension')}) ---\n"
+            context_text += f"Fecha: {meta.get('date_formatted')}\n"
+            context_text += f"Transcripción:\n{doc.page_content}\n"
 
         # 2. Build Messages for OpenAI
         # Start with the System Prompt
 
-        system_prompt = """You are a helpful, friendly, and professional AI assistant for a company. You always answer in JSON format.
+        system_prompt = """You are an expert quality assurance and conversation analist. 
+        Your objective is to analyze audio transcriptions for the company and extract metrics in JSON format. You always answer in JSON format.
         
         Guidelines:
-        1. If the user's input is a greeting, small talk, or a general question (like 'How are you?' or 'What is the capital of France?'), answer naturally and amicably without referencing documents.
-        2. If the user asks a specific question about the conversations, calls, transcripts, or any other audio related information, use the provided Context to answer as detailed as possible.
-        3. If the question requires audio related information but the information is NOT in the Context, politely say: "I'm sorry, I couldn't find that specific information in the audio conversations available to me." and provide the most relevant information available.
-        4. If chunks of text are provided, use them to answer the question.
-        5. Always maintain a polite and helpful tone.
-        6. Always the answer and summary in Spanish unless the user asks for information in another language.
-        7. Always return a summary of the conversation, call, or transcript in the answer.
-        8. The output must be strictly JSON. No text before or after.
+        1. ROLE INFERENCE: Even if the text has no tags, identify the 'Employee' (who offers help/services) and the 'Customer' (who requests help/information) from the context.
+        2. LANGUAGE: Always respond in Spanish.
+        3. ACCURACY: If the information is not in the context, use "Not available".
+        4. FORMAT: Return ONLY a valid JSON object. No text before or after.
+        5. If the user's input is a greeting, small talk, or a general question (like 'How are you?' or 'What is the capital of France?'), answer naturally and amicably without referencing documents.
+        6. If the user asks a specific question about the conversations, calls, transcripts, or any other audio related information, use the provided Context to answer as detailed as possible.
+        7. If the question requires audio related information but the information is NOT in the Context, politely say: "I'm sorry, I couldn't find that specific information in the audio conversations available to me." and provide the most relevant information available.
+        8. If chunks of text are provided, use them to answer the question.
+        9. Always maintain a polite and helpful tone.
+        10. Always return a summary of the conversation, call, or transcript in the answer.
         
+
+        METRICS TO EXTRACT:
+
+        - 'answer': Direct response to the user's question.
+        - 'sentiment_score': Number from 1 to 10 (1: very frustrated, 10: very satisfied).
+        - 'call_purpose': Category (Technical Support, Billing, Complaint, Sales, General, Information).
+        - 'resolution_status': Was the problem resolved? (Resolved / Pending / Unavailable).
+        - 'action_items': List of pending tasks mentioned.
+        - 'summary': A 3-5 sentence executive summary of the call.
 
         Desired JSON Output:
         {
@@ -411,6 +416,10 @@ class ChatAgent:
             "extension": [Extension number],
             "tags": [Tags] or "No disponible",
             "summary": [Summary] or "No disponible"
+            "sentiment_score": 0,
+            "call_purpose": "...",
+            "resolution_status": "...",
+            "action_items": [],
         }
 
         Example:
@@ -420,9 +429,15 @@ class ChatAgent:
             "employee_name": "John Doe",
             "extension": "1234",
             "tags": "project XYZ, conversation, call, transcript",
-            "summary": "The conversation between John Doe and Jane Smith was about the project XYZ..."
+            "summary": "The conversation between John Doe and Jane Smith was about the project XYZ...",
+            "sentiment_score": 0,
+            "call_purpose": "...",
+            "resolution_status": "...",
+            "action_items": [],
         }
         """
+
+        full_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
 
         messages = [
             {

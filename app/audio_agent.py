@@ -48,16 +48,16 @@ global_chat_agent_for_graph = ChatAgent()
 # --- Nodes ---
 
 
-def custom_supabase_search(query_text, extension=None, date=None, recipient=None, k=5):
+def custom_supabase_search(query_text, extension=None, date=None, recipient=None, k=20):
     query_vector = global_embedding_service_instance.get_embedding(query_text)
-    
+
     rpc_params = {
         "query_embedding": query_vector,
         "match_threshold": 0.2,
         "match_count": k,
         "filter_extension": extension,
         "filter_date": date,
-        "filter_recipient": recipient
+        "filter_recipient": recipient,
     }
 
     try:
@@ -82,27 +82,28 @@ def custom_supabase_search(query_text, extension=None, date=None, recipient=None
 
 
 def retrieve_conversations(state: AgentState):
-    if not state.get("messages"): return {"context": []}
-    
+    if not state.get("messages"):
+        return {"context": []}
+
     last_message = state["messages"][-1].content
-    
+
     # --- Extraction Logic ---
     # 1. Detect Extension (4 digits)
-    ext_match = re.search(r'\b\d{4}\b', last_message)
-    
+    ext_match = re.search(r"\b\d{4}\b", last_message)
+
     # 2. Detect Date (YYYY-MM-DD)
-    date_match = re.search(r'\d{4}-\d{2}-\d{2}', last_message)
-    
+    date_match = re.search(r"\d{4}-\d{2}-\d{2}", last_message)
+
     # 3. Detect Recipient (Phone number, usually 7-11 digits)
     # We look for long numbers that aren't the date
-    recipient_match = re.search(r'\b\d{7,15}\b', last_message)
-    
+    recipient_match = re.search(r"\b\d{7,15}\b", last_message)
+
     conversations = custom_supabase_search(
         query_text=last_message,
         extension=ext_match.group(0) if ext_match else None,
         date=date_match.group(0) if date_match else None,
         recipient=recipient_match.group(0) if recipient_match else None,
-        k=5
+        k=5,
     )
 
     return {"context": conversations}
