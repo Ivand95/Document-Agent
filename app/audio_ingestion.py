@@ -7,6 +7,8 @@ import asyncio
 import dateutil.parser
 from pathlib import Path
 from dotenv import load_dotenv
+import torch
+
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
@@ -19,6 +21,7 @@ from docling.datamodel.pipeline_options import AsrPipelineOptions, AudioPipeline
 from docling.pipeline.asr_pipeline import AsrPipeline
 import openai
 import google.generativeai as genai
+from pyannote.audio import Pipeline
 
 from langchain_core.documents import Document
 from config import (
@@ -171,6 +174,17 @@ class KnowledgeBaseIndexer:
         self.root_dir = root_dir
         self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         self.embedder = global_embedding_service_instance
+
+        # Initialize Pyannote Pipeline
+        hf_token = os.getenv("HF_TOKEN")
+        self.diarization_pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token
+        )
+        
+        # Move pipeline to GPU if available
+        if torch.cuda.is_available():
+            self.diarization_pipeline.to(torch.device("cuda"))
         
         asr_options = AsrPipelineOptions(
             do_diarization=True,
@@ -223,59 +237,57 @@ class KnowledgeBaseIndexer:
         secs = int(seconds % 60)
         return f"{mins:02d}:{secs:02d}"
 
+    def get_speaker_at_time(self, diarization_result, start_time):
+        """Finds which speaker was active at a specific second."""
+        for turn, _, speaker in diarization_result.itertracks(yield_label=True):
+            if turn.start <= start_time <= turn.end:
+                return speaker
+        return "Unknown"
+
     def index_file(self, file_path):
-        print(f"Transcribing with Diarization: {file_path.name}")
+        print(f"Diarizing with Pyannote: {file_path.name}")
         try:
+            # 1. Run Pyannote Diarization Pre-processing
+            # This generates the "Who spoke when" map
+            diarization = self.diarization_pipeline(str(file_path))
+
+            # 2. Run Docling Transcription
             result = self.converter.convert(file_path)
             file_meta = self.extract_metadata_from_name(file_path.name)
             category = self.get_category_from_path(file_path)
-            
+
             combined_text = ""
             chunks_to_insert = []
-            char_threshold = 1500
+            char_threshold = 1500 
 
             for item in result.document.texts:
-                text = getattr(item, 'text', None)
-                if not text or not text.strip():
-                    continue
+                text_line = item.text.strip()
+                if not text_line: continue
 
-                # Speaker label lives in provenance for diarized audio, not item.label
-                # (item.label is a DocItemLabel enum like TEXT/TITLE, not a speaker id)
-                speaker_raw = None
-                start = 0.0
-                end = 0.0
+                # 3. Correlate Docling Timestamp with Pyannote Speaker
+                speaker_id = "SPEAKER_00" # Default
+                timestamp_label = ""
+                
+                if hasattr(item, 'prov') and item.prov:
+                    start_time = getattr(item.prov[0], 'start', 0)
+                    end_time = getattr(item.prov[0], 'end', 0)
+                    
+                    # Use Pyannote map to find the speaker
+                    speaker_id = self.get_speaker_at_time(diarization, start_time)
+                    timestamp_label = f"[{self.format_timestamp(start_time)} - {self.format_timestamp(end_time)}] "
 
-                prov = getattr(item, 'prov', None)
-                if prov:
-                    p = prov[0] if isinstance(prov, (list, tuple)) else prov
-                    speaker_raw = (
-                        getattr(p, 'speaker_label', None)
-                        or getattr(p, 'speaker', None)
-                        or getattr(p, 'speaker_id', None)
-                    )
-                    start = getattr(p, 'start', None) or getattr(p, 'start_time', None) or 0.0
-                    end = getattr(p, 'end', None) or getattr(p, 'end_time', None) or 0.0
+                # 4. Map Speaker ID to Employee/Client
+                # Pyannote usually labels as SPEAKER_00, SPEAKER_01, etc.
+                # Logic: If speaker_id has '00', it's likely the internal extension
+                if "00" in str(speaker_id):
+                    speaker_name = file_meta.get('employee_name', 'Empleado')
+                else:
+                    speaker_name = "Cliente"
 
-                # Map speaker_00 / speaker_0 / SPEAKER_00 → employee, anything else → client
-                speaker_str = str(speaker_raw).lower() if speaker_raw else ""
-                is_first_speaker = (
-                    speaker_str in ("", "unknown")
-                    or speaker_str.endswith("_00")
-                    or speaker_str.endswith("_0")
-                    or speaker_str == "speaker_0"
-                )
-                speaker_name = file_meta.get('employee_name', 'Empleado') if is_first_speaker else "Cliente"
-
-                timestamp_str = (
-                    f"[{self.format_timestamp(start)} - {self.format_timestamp(end)}] "
-                    if (start or end) else ""
-                )
-
-                formatted_line = f"{timestamp_str}{speaker_name}: {text.strip()}\n"
+                formatted_line = f"{timestamp_label}{speaker_name}: {text_line}\n"
                 combined_text += formatted_line
 
-                
-                # Grouping logic (Approach 1)
+                # 5. Grouping Logic
                 if len(combined_text) >= char_threshold:
                     vector = self.embedder.get_embedding(combined_text)
                     if vector:
@@ -286,39 +298,39 @@ class KnowledgeBaseIndexer:
                                 "filepath": str(file_path),
                                 "filename": file_path.name,
                                 "category": category,
-                                "content_type": "audio_transcript_diarized",
+                                "content_type": "audio_transcript_pyannote",
                                 **file_meta
                             }
                         })
                     combined_text = ""
 
-            # Handle remaining text
+            # --- Handle Tail and Insert (Same as your current script) ---
             if combined_text.strip():
                 vector = self.embedder.get_embedding(combined_text)
                 if vector:
                     chunks_to_insert.append({
                         "content": combined_text.strip(),
                         "embedding": vector,
-                        "metadata": {
-                            "filepath": str(file_path),
-                            "filename": file_path.name,
-                            "category": category,
-                            "content_type": "audio_transcript_diarized",
-                            **file_meta
-                        }
+                        "metadata": { "filepath": str(file_path), **file_meta }
                     })
 
             if chunks_to_insert:
+                # Cleanup existing
+                (self.supabase.schema(self.db_schema)
+                    .table(self.db_table)
+                    .delete()
+                    .eq("metadata->>filepath", str(file_path))
+                    .execute())
+                
+                # Insert
                 for i in range(0, len(chunks_to_insert), 10):
                     self.supabase.schema(self.db_schema).table(self.db_table).insert(
                         chunks_to_insert[i : i + 10]
                     ).execute()
-                print(f"Finished {file_path.name}: Created {len(chunks_to_insert)} larger chunks.")
+                print(f"Finished {file_path.name} with Pyannote Diarization.")
 
         except Exception as e:
             print(f"Failed to process {file_path.name}: {e}")
-
-
 
     def run_indexer(self, files_to_process=None):
         if files_to_process:
