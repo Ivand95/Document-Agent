@@ -1,17 +1,18 @@
 import axios from 'axios'
 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL as string
+const WS_URL = BACKEND_URL.replace(/^http/, 'ws')
+
 const http = axios.create({
-    baseURL: import.meta.env.VITE_BACKEND_URL,
+    baseURL: BACKEND_URL,
 })
 
 export const login = () => http.get('/login')
 
 export const documentAgentWebSocket = (token: string) => {
-    const ws = new WebSocket(`${import.meta.env.VITE_BACKEND_URL}/ws/chat?token=${token}`)
-    return ws
+    return new WebSocket(`${WS_URL}/ws/chat?token=${token}`)
 }
 
 export const audioAgentWebSocket = (token: string) => {
-    const ws = new WebSocket(`${import.meta.env.VITE_BACKEND_URL}/ws/chat/audio?token=${token}`)
-    return ws
+    return new WebSocket(`${WS_URL}/ws/chat/audio?token=${token}`)
 }

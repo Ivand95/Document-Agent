@@ -7,7 +7,7 @@ from models.user_profile import UserProfile
 CLIENT_ID = os.getenv("OFFICE_365_CLIENT_ID")
 CLIENT_SECRET = os.getenv("OFFICE_365_CLIENT_SECRET")
 TENANT_ID = os.getenv("OFFICE_365_TENANT_ID")
-REDIRECT_URI = "http://localhost:8000/auth/callback" 
+REDIRECT_URI = os.getenv("AUTH_REDIRECT_URI", "http://localhost:8000/auth/callback")
 
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,department,jobTitle"

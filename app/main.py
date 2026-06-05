@@ -34,16 +34,17 @@ app = FastAPI()
 load_dotenv()
 
 # Add CORS middleware
+_frontend_url = os.getenv("FRONTEND_URL", "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[_frontend_url] if _frontend_url != "*" else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # JWT Configuration (For session management)
-SECRET_KEY = "your_super_secret_key"
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-production")
 ALGORITHM = "HS256"
 oauth2_scheme = HTTPBearer()
 
