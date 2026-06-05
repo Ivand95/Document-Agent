@@ -46,3 +46,4 @@ downloads/*
 downloads_audio/*
 sync_state.json
 audio_sync_state.json
+*.pyc

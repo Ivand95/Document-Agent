@@ -1,32 +1,24 @@
-# Use a specific version of Python 3.13 as the base image
 FROM python:3.13-slim
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Set the working directory in the container
 WORKDIR /usr/src/app
 
-# Install necessary system packages (if needed)
 RUN apt-get update && apt-get install -y \
     git \
+    build-essential \
+    libsndfile1 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container
-COPY requirements.txt .
+RUN pip install --no-cache-dir uv
 
-# Upgrade pip and install uv
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir uv
+COPY pyproject.toml uv.lock ./
 
-# Install other dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN uv sync --no-dev
 
-# Copy the application code into the container
-COPY . .
+COPY app/ ./app/
 
-# Create the virtual environment using uv
-RUN uv venv
+EXPOSE 8000
 
-# Set the entry point for the container to activate the virtual environment and run the app
-CMD ["/bin/sh", "-c", "source .venv/bin/activate && uv run app/agent.py"]
+CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

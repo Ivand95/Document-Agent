@@ -1,5 +1,3 @@
-import { useState, useRef, useEffect, useLayoutEffect, useMemo } from "react";
-import "./style.css";
 import {
   ArrowDownward,
   AutoAwesome,
@@ -11,10 +9,12 @@ import {
   Send,
 } from "@mui/icons-material";
 import { Avatar, Button, CircularProgress, IconButton } from "@mui/material";
-import { useNavigate } from "react-router";
-import { documentAgentWebSocket, audioAgentWebSocket } from "../utils/axios";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import { useNavigate } from "react-router";
 import remarkGfm from "remark-gfm";
+import { audioAgentWebSocket, documentAgentWebSocket } from "../utils/axios";
+import "./style.css";
 
 type MessageRole = "user" | "assistant";
 
@@ -330,9 +330,8 @@ const isDocumentContent = (
   c: Message["content"],
 ): c is documentMessageContent => "document_reference" in c;
 
-const isAudioContent = (
-  c: Message["content"],
-): c is audioMessageContent => "employee_name" in c;
+const isAudioContent = (c: Message["content"]): c is audioMessageContent =>
+  "employee_name" in c;
 
 const RefRow = ({ label, value }: { label: string; value: string }) => (
   <div className="msg-refs-row">
@@ -344,17 +343,31 @@ const RefRow = ({ label, value }: { label: string; value: string }) => (
 const MessageReferences = ({ content }: { content: Message["content"] }) => {
   const [open, setOpen] = useState(false);
 
-  const hasRefs = content.tags || (
-    isDocumentContent(content)
-      ? content.document_reference || content.section_reference || content.department_reference
-      : content.employee_name || content.conversation_date || content.summary
-  );
+  const hasRefs =
+    content.tags ||
+    (isDocumentContent(content)
+      ? content.document_reference ||
+        content.section_reference ||
+        content.department_reference
+      : content.employee_name || content.conversation_date || content.summary);
 
   if (!hasRefs) return null;
-
-  const tags = content.tags
-    ? content.tags.split(",").map((t) => t.trim()).filter(Boolean)
-    : [];
+  console.log(content);
+  const tags = (() => {
+    if (!content.tags) return [];
+    if (Array.isArray(content.tags)) {
+      return content.tags
+        .map((t) => (typeof t === "string" ? t.trim() : t))
+        .filter(Boolean);
+    }
+    if (typeof content.tags === "string") {
+      return content.tags
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+    }
+    return [];
+  })();
 
   return (
     <div className="msg-refs">
@@ -382,7 +395,10 @@ const MessageReferences = ({ content }: { content: Message["content"] }) => {
                 <RefRow label="Sección" value={content.section_reference} />
               )}
               {content.department_reference && (
-                <RefRow label="Departamento" value={content.department_reference} />
+                <RefRow
+                  label="Departamento"
+                  value={content.department_reference}
+                />
               )}
             </>
           )}
