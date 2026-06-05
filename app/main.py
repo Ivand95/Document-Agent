@@ -35,6 +35,7 @@ def get_app_graph():
     global _app_graph
     if _app_graph is None:
         from agent import app_graph
+
         _app_graph = app_graph
     return _app_graph
 
@@ -43,8 +44,10 @@ def get_app_audio_graph():
     global _app_audio_graph
     if _app_audio_graph is None:
         from audio_agent import app_audio_graph
+
         _app_audio_graph = app_audio_graph
     return _app_audio_graph
+
 
 app = FastAPI()
 load_dotenv()
@@ -53,6 +56,7 @@ load_dotenv()
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
 
 # Add CORS middleware
 _frontend_url = os.getenv("FRONTEND_URL", "*")
@@ -66,6 +70,7 @@ app.add_middleware(
 
 # JWT Configuration (For session management)
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-production")
+REDIRECT_URI = os.getenv("AUTH_REDIRECT_URI", "http://localhost:8000")
 ALGORITHM = "HS256"
 oauth2_scheme = HTTPBearer()
 
@@ -132,7 +137,7 @@ def login():
         f"{AUTHORITY}/oauth2/v2.0/authorize"
         f"?client_id={CLIENT_ID}"
         f"&response_type=code"
-        f"&redirect_uri=http://localhost:8000/auth/callback"
+        f"&redirect_uri={REDIRECT_URI}/auth/callback"
         f"&response_mode=query"
         f"&scope={scope}"
     )
@@ -346,33 +351,37 @@ async def websocket_chat(
 
 # --- WebSocket Endpoint Audio ---
 
+
 @app.websocket("/ws/chat/audio")
 async def websocket_chat_audio(
-    websocket: WebSocket, 
-    token: str = Query(...) # Auth token expected in the query string
+    websocket: WebSocket,
+    token: str = Query(...),  # Auth token expected in the query string
 ):
     """
     WebSocket endpoint for chat audio.
     Client connects to: ws://localhost:8000/ws/chat/audio?token=YOUR_JWT_HERE (ws://127.0.0.1:8000/ws/chat/audio?token=YOUR_JWT_HERE if using IPV6 addresses)
     """
-    
+
     # 1. Accept Connection & Validate Auth Manually
     # The `get_current_user_dept_ws` function is used here to perform authentication
     # and will close the connection if authentication fails.
     department = await get_current_user_dept_ws(websocket, token)
-    if not department: return 
-        
+    if not department:
+        return
+
     await websocket.accept()
-    
+
     # 1. CREATE A UNIQUE ID FOR THIS SPECIFIC CHAT SESSION
     session_id = str(uuid.uuid4())
-    print(f"WS Connection accepted for Department: {department} (Session: {session_id})")
+    print(
+        f"WS Connection accepted for Department: {department} (Session: {session_id})"
+    )
 
     try:
         while True:
             # 2. Receive Message from client
             data = await websocket.receive_text()
-            
+
             # (Optional) Attempt to parse the incoming message as JSON,
             # otherwise treat it as a plain text message.
             try:
@@ -380,18 +389,36 @@ async def websocket_chat_audio(
                 user_message = message_data.get("message", "")
                 if not user_message:
                     # If JSON was parsed but 'message' key is missing or empty
-                    await websocket.send_text(json.dumps({"type": "error", "content": "Message content missing in JSON."}))
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "content": "Message content missing in JSON.",
+                            }
+                        )
+                    )
                     continue
             except json.JSONDecodeError:
                 # If it's not valid JSON, treat it as plain text
                 user_message = data
-                if not user_message.strip(): # Check for empty messages
-                    await websocket.send_text(json.dumps({"type": "error", "content": "Empty message received."}))
+                if not user_message.strip():  # Check for empty messages
+                    await websocket.send_text(
+                        json.dumps(
+                            {"type": "error", "content": "Empty message received."}
+                        )
+                    )
                     continue
-            except Exception as e: # Catch other potential issues during parsing
-                await websocket.send_text(json.dumps({"type": "error", "content": f"Failed to process message: {str(e)}"}))
+            except Exception as e:  # Catch other potential issues during parsing
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "content": f"Failed to process message: {str(e)}",
+                        }
+                    )
+                )
                 continue
-            
+
             print(f"Department '{department}' asks: {user_message}")
 
             # 3. Prepare inputs for your Agent (e.g., LangGraph)
@@ -403,33 +430,44 @@ async def websocket_chat_audio(
             # Pass the session id to LangGraph
             # This tells LangGraph to isolate this conversation's state
             config = {"configurable": {"thread_id": session_id}}
-            
+
             result = await get_app_audio_graph().ainvoke(inputs, config=config)
             answer = result.get("answer", "No answer could be generated.")
-            
+
             # 4. Send Response back to the client
             response_payload = {
                 "type": "answer",
                 "content": answer,
                 "department_context": department,
-                "timestamp": datetime.utcnow().isoformat() + "Z" 
+                "timestamp": datetime.utcnow().isoformat() + "Z",
             }
             await websocket.send_text(json.dumps(response_payload))
-            
+
     except WebSocketDisconnect:
         # This exception is raised when the client disconnects
-        print(f"Client from Department '{department}' disconnected. Session ID: {session_id}")
+        print(
+            f"Client from Department '{department}' disconnected. Session ID: {session_id}"
+        )
     except Exception as e:
         # Catch any other unexpected errors during the WebSocket session
-        print(f"Unexpected WebSocket error for Department '{department}': {e}. Session ID: {session_id}")
+        print(
+            f"Unexpected WebSocket error for Department '{department}': {e}. Session ID: {session_id}"
+        )
         # Attempt to send an error message to the client before potentially closing the connection
         try:
-            await websocket.send_text(json.dumps({"type": "error", "content": f"An internal server error occurred: {str(e)}"}))
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "content": f"An internal server error occurred: {str(e)}",
+                    }
+                )
+            )
         except RuntimeError as rt_e:
             # If the client is already disconnected, send_text might fail
             print(f"Could not send error message to client: {rt_e}")
         finally:
-            await websocket.close(code=1011) 
+            await websocket.close(code=1011)
 
 
 if __name__ == "__main__":
