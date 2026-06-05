@@ -33,6 +33,11 @@ from models.chat_request import ChatRequest
 app = FastAPI()
 load_dotenv()
 
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
 # Add CORS middleware
 _frontend_url = os.getenv("FRONTEND_URL", "*")
 app.add_middleware(
@@ -415,7 +420,7 @@ if __name__ == "__main__":
     # logging.info("Starting Uvicorn server on 0.0.0.0:8000")
     print("Starting Uvicorn server on 0.0.0.0:8000")
     try:
-        uvicorn.run("main:app", host="0.0.0.0", reload=True, port=8000)
+        uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
     except KeyboardInterrupt:
         # logging.log_shutdown("Keyboard interrupt received")
         print("Keyboard interrupt received")
