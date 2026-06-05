@@ -25,10 +25,26 @@ from fastapi.security import (
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
 from auth import exchange_code_for_token, get_user_profile, AUTHORITY, CLIENT_ID
-from agent import app_graph
-from audio_agent import app_audio_graph
-
 from models.chat_request import ChatRequest
+
+_app_graph = None
+_app_audio_graph = None
+
+
+def get_app_graph():
+    global _app_graph
+    if _app_graph is None:
+        from agent import app_graph
+        _app_graph = app_graph
+    return _app_graph
+
+
+def get_app_audio_graph():
+    global _app_audio_graph
+    if _app_audio_graph is None:
+        from audio_agent import app_audio_graph
+        _app_audio_graph = app_audio_graph
+    return _app_audio_graph
 
 app = FastAPI()
 load_dotenv()
@@ -200,7 +216,7 @@ async def chat_endpoint(
     }
 
     # Run the graph
-    result = await app_graph.ainvoke(inputs)
+    result = await get_app_graph().ainvoke(inputs)
 
     return {"response": result["answer"], "department_context_used": department}
 
@@ -288,7 +304,7 @@ async def websocket_chat(
             # This tells LangGraph to isolate this conversation's state
             config = {"configurable": {"thread_id": session_id}}
 
-            result = await app_graph.ainvoke(inputs, config=config)
+            result = await get_app_graph().ainvoke(inputs, config=config)
             answer = result.get("answer", "No answer could be generated.")
 
             # 4. Send Response back to the client
@@ -388,8 +404,8 @@ async def websocket_chat_audio(
             # This tells LangGraph to isolate this conversation's state
             config = {"configurable": {"thread_id": session_id}}
             
-            result = await app_audio_graph.ainvoke(inputs, config=config)
-            answer = result.get("answer", "No answer could be generated.") 
+            result = await get_app_audio_graph().ainvoke(inputs, config=config)
+            answer = result.get("answer", "No answer could be generated.")
             
             # 4. Send Response back to the client
             response_payload = {
