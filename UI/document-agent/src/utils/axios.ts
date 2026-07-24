@@ -1,7 +1,14 @@
 import axios from "axios";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL as string;
-const WS_URL = BACKEND_URL.replace(/^http/, "ws");
+
+if (!BACKEND_URL) {
+  console.error(
+    "VITE_BACKEND_URL is not defined. Set it as a build arg when building the frontend image."
+  );
+}
+
+const WS_URL = (BACKEND_URL ?? "").replace(/^http/, "ws");
 
 const http = axios.create({
   baseURL: BACKEND_URL,
