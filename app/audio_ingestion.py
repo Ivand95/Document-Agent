@@ -1,10 +1,7 @@
 import os
 import json
 import re
-import requests
-import msal
 import asyncio
-import dateutil.parser
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -21,6 +18,7 @@ import openai
 import google.generativeai as genai
 
 from langchain_core.documents import Document
+from sharepoint_sync import SharePointSyncBase, data_dir, db_key
 from config import (
     global_supabase_client,
     global_embedding_service_instance,
@@ -36,26 +34,26 @@ load_dotenv()
 
 
 # --- Part 1: SharePoint Sync ---
-class SharePointSync:
-    def __init__(self, download_dir):
+# Folder inside the conversations library that holds the 3CX call recordings
+DEFAULT_AUDIO_FOLDER = "3CX Recordings"
 
-        self.tenant_id = os.getenv("OFFICE_365_TENANT_ID")
-        self.client_id = os.getenv("OFFICE_365_CLIENT_ID")
-        self.client_secret = os.getenv("OFFICE_365_CLIENT_SECRET")
-        self.host_name = os.getenv("OFFICE_365_SITE_HOSTNAME")
-        self.site_path = os.getenv("OFFICE_365_CONVERSATION_SITE_NAME")
-        self.doc_lib_name = os.getenv("OFFICE_365_CONVERSATION_DOCUMENT_LIBRARY_NAME")
 
-        self.download_dir = download_dir
-        self.state_file = Path("audio_sync_state.json")
-        self.sync_state = {}
-        self.updated_files = []
-        self.headers = None
-        self.scopes = ["https://graph.microsoft.com/.default"]
-
-        if self.state_file.exists():
-            with open(self.state_file, "r") as f:
-                self.sync_state = json.load(f)
+class SharePointSync(SharePointSyncBase):
+    def __init__(self, download_dir, force=False, limit=None, folder_path=None):
+        super().__init__(
+            download_dir=download_dir,
+            state_file=data_dir() / "audio_sync_state.json",
+            site_path=os.getenv("OFFICE_365_CONVERSATION_SITE_NAME"),
+            doc_lib_name=os.getenv("OFFICE_365_CONVERSATION_DOCUMENT_LIBRARY_NAME"),
+            # None = env / default folder; "" = whole library
+            root_folder=(
+                os.getenv("OFFICE_365_CONVERSATION_FOLDER_PATH", DEFAULT_AUDIO_FOLDER)
+                if folder_path is None
+                else folder_path
+            ),
+            force=force,
+            limit=limit,
+        )
 
         # REGEX: [Name]_Ext-Phone_Timestamp.wav (Phone must be 7-15 digits to filter out extension-to-extension)
         # REGEX EXPLANATION:
@@ -71,98 +69,11 @@ class SharePointSync:
             r"^(\[.*?\])?_(\d{3,4})-(\d{7,15})_(\d+).*?\.wav$", re.IGNORECASE
         )
 
-    def authenticate(self):
-        app = msal.ConfidentialClientApplication(
-            self.client_id,
-            authority=f"https://login.microsoftonline.com/{self.tenant_id}",
-            client_credential=self.client_secret,
-        )
-        result = app.acquire_token_for_client(scopes=self.scopes)
-        if "access_token" in result:
-            self.headers = {"Authorization": f'Bearer {result["access_token"]}'}
-        else:
-            raise Exception(f"Auth failed: {result.get('error_description')}")
-
-    def get_site_and_drive(self):
-        site_url = f"https://graph.microsoft.com/v1.0/sites/{self.host_name}"
-        resp = requests.get(site_url, headers=self.headers)
-        resp.raise_for_status()
-        site_id = resp.json()["id"]
-
-        resp = requests.get(
-            f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives",
-            headers=self.headers,
-        )
-
-        drive_id = next(
-            (d["id"] for d in resp.json()["value"] if d["name"] == self.doc_lib_name),
-            None,
-        )
-        if not drive_id:
-            raise Exception("Drive not found")
-        return site_id, drive_id
-
     def is_valid_audio_file(self, filename):
         return bool(self.audio_pattern.match(filename))
 
-    def process_folder(self, site_id, drive_id, folder_id="root", current_path=None):
-        if current_path is None:
-            current_path = self.download_dir
-
-        url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/items/{folder_id}/children"
-
-        while url:
-            resp = requests.get(url, headers=self.headers)
-            data = resp.json()
-
-            for item in data.get("value", []):
-                name = item["name"]
-                local_path = current_path / name
-
-                if "folder" in item:
-                    self.process_folder(site_id, drive_id, item["id"], local_path)
-                elif "file" in item:
-                    if not self.is_valid_audio_file(name):
-                        continue
-
-                    remote_mod = item["lastModifiedDateTime"]
-                    item_id = item["id"]
-
-                    needs_sync = True
-                    if item_id in self.sync_state:
-                        saved_time = dateutil.parser.isoparse(self.sync_state[item_id])
-                        remote_time = dateutil.parser.isoparse(remote_mod)
-                        if remote_time <= saved_time and local_path.exists():
-                            needs_sync = False
-
-                    if needs_sync:
-                        self.download_file(
-                            item["@microsoft.graph.downloadUrl"], local_path
-                        )
-                        self.sync_state[item_id] = remote_mod
-                        self.updated_files.append(local_path)
-
-            url = data.get("@odata.nextLink")
-
-    def download_file(self, url, path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        print(f"Downloading: {path}")
-        with requests.get(url, stream=True) as r:
-            r.raise_for_status()
-            with open(path, "wb") as f:
-                for chunk in r.iter_content(8192):
-                    f.write(chunk)
-
-    def run(self):
-        self.authenticate()
-        site_id, drive_id = self.get_site_and_drive()
-        print("Starting SharePoint Sync for Audio Files...")
-        self.process_folder(site_id, drive_id)
-
-        with open(self.state_file, "w") as f:
-            json.dump(self.sync_state, f, indent=4)
-
-        return self.updated_files
+    def is_valid_file(self, name):
+        return self.is_valid_audio_file(name)
 
 
 # --- Part 2: Audio Indexer ---
@@ -248,7 +159,23 @@ class KnowledgeBaseIndexer:
         )
         return json.loads(response.choices[0].message.content)
 
-    async def index_file(self, file_path):
+    def delete_file(self, file_path) -> bool:
+        """Removes every chunk stored for a file. Returns False on failure."""
+        try:
+            (
+                self.supabase.schema(self.db_schema)
+                .table(self.db_table)
+                .delete()
+                .eq("metadata->>filepath", db_key(file_path))
+                .execute()
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to delete chunks for {file_path}: {e}")
+            return False
+
+    async def index_file(self, file_path) -> bool:
+        """Returns True when the file is fully indexed (or has nothing to index)."""
         print(f"Processing and Analyzing: {file_path.name}")
         try:
             result = self.converter.convert(file_path)
@@ -268,33 +195,42 @@ class KnowledgeBaseIndexer:
                 combined_text += item.text + " "
                 if len(combined_text) >= 1200:
                     vector = self.embedder.get_embedding(combined_text)
-                    if vector:
-                        chunks_to_insert.append(
-                            {
-                                "content": combined_text.strip(),
-                                "embedding": vector,
-                                "metadata": {
-                                    "filepath": str(file_path),
-                                    "filename": file_path.name,
-                                    "category": category,
-                                    **file_meta,
-                                    **analysis,  # <--- INJECT ANALYSIS INTO METADATA
-                                },
-                            }
-                        )
+                    if not vector:
+                        # Keep the old chunks and retry on the next run instead of storing a partial call
+                        print(f"Embedding failed for {file_path.name}; keeping old chunks.")
+                        return False
+                    chunks_to_insert.append(
+                        {
+                            "content": combined_text.strip(),
+                            "embedding": vector,
+                            "metadata": {
+                                "filepath": db_key(file_path),
+                                "filename": file_path.name,
+                                "category": category,
+                                **file_meta,
+                                **analysis,  # <--- INJECT ANALYSIS INTO METADATA
+                            },
+                        }
+                    )
                     combined_text = ""
 
             # 4. Handle remaining text
             if combined_text.strip():
                 vector = self.embedder.get_embedding(combined_text)
-                if vector:
-                    chunks_to_insert.append(
-                        {
-                            "content": combined_text.strip(),
-                            "embedding": vector,
-                            "metadata": {"filepath": str(file_path), **file_meta},
-                        }
-                    )
+                if not vector:
+                    print(f"Embedding failed for {file_path.name}; keeping old chunks.")
+                    return False
+                chunks_to_insert.append(
+                    {
+                        "content": combined_text.strip(),
+                        "embedding": vector,
+                        "metadata": {"filepath": db_key(file_path), **file_meta},
+                    }
+                )
+
+            # 5. Replace old entries only once the new chunks are ready
+            if not self.delete_file(file_path):
+                return False
 
             if chunks_to_insert:
                 for i in range(0, len(chunks_to_insert), 10):
@@ -304,18 +240,27 @@ class KnowledgeBaseIndexer:
                 print(
                     f"Finished {file_path.name}: Created {len(chunks_to_insert)} larger chunks."
                 )
+            return True
 
         except Exception as e:
             print(f"Failed to process {file_path.name}: {e}")
+            return False
 
     async def run_indexer(self, files_to_process=None):
+        """Indexes the given files (or every local call). Returns the successfully indexed paths."""
         if files_to_process:
-            for f in files_to_process:
-                await self.index_file(f)
+            files = files_to_process
         else:
-            for f in self.root_dir.rglob("*.wav"):
-                if f.is_file() and self.audio_pattern.match(f.name):
-                    await self.index_file(f)
+            files = [
+                f
+                for f in self.root_dir.rglob("*.wav")
+                if f.is_file() and self.audio_pattern.match(f.name)
+            ]
+        indexed = []
+        for f in files:
+            if await self.index_file(f):
+                indexed.append(f)
+        return indexed
 
 
 # --- Part 3: Interactive Chat Agent Audio ---
@@ -497,31 +442,43 @@ class ChatAgent:
 
 
 # --- Scheduled Indexing Execution Flow ---
-async def scheduled_audio_indexing():
-    DOWNLOAD_DIR = Path("./downloads_audio")
+async def scheduled_audio_indexing(force=False, limit=None, folder_path=None):
+    """Syncs SharePoint, indexes new/modified calls and drops removed ones. Returns a summary."""
+    DOWNLOAD_DIR = data_dir() / "downloads_audio"
 
     # 1. Run SharePoint Sync
-    syncer = SharePointSync(DOWNLOAD_DIR)
+    syncer = SharePointSync(
+        DOWNLOAD_DIR, force=force, limit=limit, folder_path=folder_path
+    )
     updated_files = syncer.run()
 
     # 2. Run Indexer
     indexer = KnowledgeBaseIndexer(DOWNLOAD_DIR)
 
-    if updated_files:
-        await indexer.run_indexer(updated_files)
-    else:
+    indexed = await indexer.run_indexer(updated_files) if updated_files else []
+    if not updated_files:
         print("No new files from SharePoint.")
+
+    # 3. Only files that were indexed are recorded as synced
+    for path in indexed:
+        syncer.commit(path)
+
+    # 4. Drop chunks of calls removed or moved in SharePoint
+    deleted = syncer.apply_removals(indexer.delete_file)
+
+    return {
+        "synced": len(updated_files),
+        "indexed": len(indexed),
+        "failed": len(updated_files) - len(indexed),
+        "deleted": deleted,
+    }
 
 
 # --- Execution ---
 if __name__ == "__main__":
-    DOWNLOAD_DIR = Path("./downloads_audio")
-    syncer = SharePointSync(DOWNLOAD_DIR)
-    updated_files = syncer.run()
+    summary = asyncio.run(scheduled_audio_indexing())
+    print(summary)
 
-    indexer = KnowledgeBaseIndexer(DOWNLOAD_DIR)
-    if updated_files:
-        asyncio.run(indexer.run_indexer(updated_files))
-    else:
+    if not summary["synced"]:
         print("No new audio files. Running full scan...")
-        asyncio.run(indexer.run_indexer())
+        asyncio.run(KnowledgeBaseIndexer(data_dir() / "downloads_audio").run_indexer())

@@ -26,6 +26,12 @@ from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
 from auth import exchange_code_for_token, get_user_profile, AUTHORITY, CLIENT_ID
 from models.chat_request import ChatRequest
+from models.indexing_request import IndexingRequest
+from indexing_runner import (
+    indexing_endpoints_enabled,
+    indexing_status,
+    start_indexing,
+)
 
 _app_graph = None
 _app_audio_graph = None
@@ -468,6 +474,56 @@ async def websocket_chat_audio(
             print(f"Could not send error message to client: {rt_e}")
         finally:
             await websocket.close(code=1011)
+
+
+# --- Manual indexing (non-production only) ---
+
+
+def require_non_production():
+    """Blocks the endpoint unless APP_ENV is a development environment."""
+    if not indexing_endpoints_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Indexing endpoints are disabled in production.",
+        )
+
+
+@app.post(
+    "/admin/indexing/run",
+    status_code=202,
+    dependencies=[Depends(require_non_production)],
+)
+async def run_indexing_endpoint(
+    request: IndexingRequest,
+    department: str = Depends(get_current_user_dept),
+):
+    """
+    Starts a SharePoint -> Supabase indexing run in the background.
+    Only available when APP_ENV is development/dev/local/test.
+    Poll GET /admin/indexing/status for the result.
+    """
+    params = {
+        "target": request.target,
+        "force": request.full,
+        "limit": request.limit,
+        "docs_folder": request.docs_folder,
+        "audio_folder": request.audio_folder,
+    }
+    print(f"Indexing run requested by department '{department}': {params}")
+    if not start_indexing(params):
+        raise HTTPException(status_code=409, detail="An indexing run is already in progress.")
+    return {"status": "started", "params": params}
+
+
+@app.get(
+    "/admin/indexing/status",
+    dependencies=[Depends(require_non_production)],
+)
+async def indexing_status_endpoint(
+    department: str = Depends(get_current_user_dept),
+):
+    """Current or last manual indexing run."""
+    return indexing_status()
 
 
 if __name__ == "__main__":

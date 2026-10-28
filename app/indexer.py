@@ -1,9 +1,6 @@
 import os
 import json
-import requests
-import msal
 import asyncio
-import dateutil.parser
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -16,6 +13,7 @@ import google.generativeai as genai
 
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from sharepoint_sync import SharePointSyncBase, data_dir, db_key
 from config import (
     global_supabase_client,
     global_embedding_service_instance,
@@ -30,121 +28,36 @@ from config import (
 load_dotenv()
 
 
-# --- Part 1: SharePoint Sync (Updated) ---
-class SharePointSync:
-    def __init__(self, download_dir):
-        self.tenant_id = os.getenv("OFFICE_365_TENANT_ID")
-        self.client_id = os.getenv("OFFICE_365_CLIENT_ID")
-        self.client_secret = os.getenv("OFFICE_365_CLIENT_SECRET")
-        self.host_name = os.getenv("OFFICE_365_SITE_HOSTNAME")
-        self.site_path = os.getenv("OFFICE_365_SITE_NAME")
-        self.doc_lib_name = os.getenv("OFFICE_365_DOCUMENT_LIBRARY_NAME")
+# --- Part 1: SharePoint Sync ---
+# Formats Docling can convert (legacy .doc/.ppt/.xls are not supported by it)
+SUPPORTED_EXTENSIONS = {
+    ".pdf",
+    ".docx",
+    ".pptx",
+    ".md",
+    ".txt",
+    ".csv",
+    ".xlsx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+}
 
-        self.download_dir = download_dir
-        self.state_file = Path("sync_state.json")
-        self.sync_state = {}
 
-        self.scopes = ["https://graph.microsoft.com/.default"]
-        self.headers = None
-
-        # Track updated files to trigger indexing later
-        self.updated_files = []
-
-        if self.state_file.exists():
-            with open(self.state_file, "r") as f:
-                self.sync_state = json.load(f)
-
-    def authenticate(self):
-        app = msal.ConfidentialClientApplication(
-            self.client_id,
-            authority=f"https://login.microsoftonline.com/{self.tenant_id}",
-            client_credential=self.client_secret,
-        )
-        result = app.acquire_token_for_client(scopes=self.scopes)
-        if "access_token" in result:
-            self.headers = {"Authorization": f'Bearer {result["access_token"]}'}
-        else:
-            raise Exception(f"Auth failed: {result.get('error_description')}")
-
-    def get_site_and_drive(self):
-        # 1. Get Site
-        site_url = (
-            f"https://graph.microsoft.com/v1.0/sites/{self.host_name}:{self.site_path}"
-        )
-        resp = requests.get(site_url, headers=self.headers)
-        resp.raise_for_status()
-        site_id = resp.json()["id"]
-
-        # 2. Get Drive
-        resp = requests.get(
-            f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives",
-            headers=self.headers,
-        )
-        drive_id = next(
-            (d["id"] for d in resp.json()["value"] if d["name"] == self.doc_lib_name),
-            None,
+class SharePointSync(SharePointSyncBase):
+    def __init__(self, download_dir, force=False, limit=None, folder_path=None):
+        super().__init__(
+            download_dir=download_dir,
+            state_file=data_dir() / "sync_state.json",
+            site_path=os.getenv("OFFICE_365_SITE_NAME"),
+            doc_lib_name=os.getenv("OFFICE_365_DOCUMENT_LIBRARY_NAME"),
+            root_folder=folder_path,
+            force=force,
+            limit=limit,
         )
 
-        if not drive_id:
-            raise Exception("Drive not found")
-        return site_id, drive_id
-
-    def process_folder(self, site_id, drive_id, folder_id="root", current_path=None):
-        if current_path is None:
-            current_path = self.download_dir
-
-        url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/items/{folder_id}/children"
-
-        while url:
-            resp = requests.get(url, headers=self.headers)
-            data = resp.json()
-
-            for item in data.get("value", []):
-                name = item["name"]
-                local_path = current_path / name
-
-                if "folder" in item:
-                    self.process_folder(site_id, drive_id, item["id"], local_path)
-                elif "file" in item:
-                    remote_mod = item["lastModifiedDateTime"]
-                    item_id = item["id"]
-
-                    # Check if download needed
-                    needs_sync = True
-                    if item_id in self.sync_state:
-                        saved_time = dateutil.parser.isoparse(self.sync_state[item_id])
-                        remote_time = dateutil.parser.isoparse(remote_mod)
-                        if remote_time <= saved_time and local_path.exists():
-                            needs_sync = False
-
-                    if needs_sync:
-                        self.download_file(
-                            item["@microsoft.graph.downloadUrl"], local_path
-                        )
-                        self.sync_state[item_id] = remote_mod
-                        self.updated_files.append(local_path)  # Mark for indexing
-
-            url = data.get("@odata.nextLink")
-
-    def download_file(self, url, path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        print(f"Downloading: {path}")
-        with requests.get(url, stream=True) as r:
-            r.raise_for_status()
-            with open(path, "wb") as f:
-                for chunk in r.iter_content(8192):
-                    f.write(chunk)
-
-    def run(self):
-        self.authenticate()
-        site_id, drive_id = self.get_site_and_drive()
-        print("Starting SharePoint Sync...")
-        self.process_folder(site_id, drive_id)
-
-        with open(self.state_file, "w") as f:
-            json.dump(self.sync_state, f, indent=4)
-
-        return self.updated_files
+    def is_valid_file(self, name):
+        return Path(name).suffix.lower() in SUPPORTED_EXTENSIONS
 
 
 # --- Part 2: Knowledge Base Indexer ---
@@ -174,7 +87,23 @@ class KnowledgeBaseIndexer:
         except ValueError:
             return "External"
 
-    def index_file(self, file_path):
+    def delete_file(self, file_path) -> bool:
+        """Removes every chunk stored for a file. Returns False on failure."""
+        try:
+            (
+                self.supabase.schema(self.db_schema)
+                .table(self.db_table)
+                .delete()
+                .eq("metadata->>filepath", db_key(file_path))
+                .execute()
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to delete chunks for {file_path}: {e}")
+            return False
+
+    def index_file(self, file_path) -> bool:
+        """Returns True when the file is fully indexed (or has nothing to index)."""
         print(f"Processing with Docling: {file_path.name}")
 
         try:
@@ -184,16 +113,6 @@ class KnowledgeBaseIndexer:
 
             category = self.get_category_from_path(file_path)
 
-            # 2. Cleanup Old Entries
-            # IMPORTANT: We explicitly call .schema() before .table()
-            (
-                self.supabase.schema(self.db_schema)
-                .table(self.db_table)
-                .delete()
-                .eq("metadata->>filepath", str(file_path))
-                .execute()
-            )
-
             chunks_to_insert = []
 
             for item in doc.texts:
@@ -201,16 +120,18 @@ class KnowledgeBaseIndexer:
                 if not text_content or len(text_content) < 50:
                     continue
 
-                # 3. Embed
+                # 2. Embed
                 vector = self.embedder.get_embedding(text_content)
                 if not vector:
-                    continue
+                    # Keep the old chunks and retry on the next run instead of storing a partial file
+                    print(f"Embedding failed for {file_path.name}; keeping old chunks.")
+                    return False
 
-                # 4. Prepare Payload
+                # 3. Prepare Payload
                 payload = {
                     "content": text_content,
                     "metadata": {
-                        "filepath": str(file_path),
+                        "filepath": db_key(file_path),
                         "filename": file_path.name,
                         "category": category,
                         "page_no": getattr(item, "page_no", 1),
@@ -218,6 +139,10 @@ class KnowledgeBaseIndexer:
                     "embedding": vector,
                 }
                 chunks_to_insert.append(payload)
+
+            # 4. Replace old entries only once the new chunks are ready
+            if not self.delete_file(file_path):
+                return False
 
             # 5. Batch Insert
             if chunks_to_insert:
@@ -238,36 +163,27 @@ class KnowledgeBaseIndexer:
                 )
             else:
                 print(f"No readable text found in {file_path.name}")
+            return True
 
         except Exception as e:
             print(f"Failed to index {file_path.name}: {e}")
+            return False
 
     def run_indexer(self, files_to_process=None):
+        """Indexes the given files (or every local file). Returns the successfully indexed paths."""
         if files_to_process:
             print(
                 f"Indexing {len(files_to_process)} new/modified files to {self.db_schema}.{self.db_table}..."
             )
-            for f in files_to_process:
-                self.index_file(f)
+            files = files_to_process
         else:
             print(f"Full scan indexing to {self.db_schema}.{self.db_table}...")
-            for f in self.root_dir.rglob("*"):
-                if f.is_file() and f.suffix.lower() in [
-                    ".pdf",
-                    ".docx",
-                    ".pptx",
-                    ".md",
-                    ".txt",
-                    ".csv",
-                    ".xls",
-                    ".xlsx",
-                    ".doc",
-                    ".ppt",
-                    ".png",
-                    ".jpg",
-                    ".jpeg",
-                ]:
-                    self.index_file(f)
+            files = [
+                f
+                for f in self.root_dir.rglob("*")
+                if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
+            ]
+        return [f for f in files if self.index_file(f)]
 
 
 # --- Part 3: Interactive Chat Agent (New) ---
@@ -432,42 +348,47 @@ class ChatAgent:
 
 
 # --- Scheduled Indexing Execution Flow ---
-def scheduled_indexing():
-    DOWNLOAD_DIR = Path("./downloads")
+def scheduled_indexing(force=False, limit=None, folder_path=None):
+    """Syncs SharePoint, indexes new/modified files and drops removed ones. Returns a summary."""
+    DOWNLOAD_DIR = data_dir() / "downloads"
 
     # 1. Run SharePoint Sync
-    syncer = SharePointSync(DOWNLOAD_DIR)
+    syncer = SharePointSync(
+        DOWNLOAD_DIR, force=force, limit=limit, folder_path=folder_path
+    )
     updated_files = syncer.run()
 
     # 2. Run Indexer
     indexer = KnowledgeBaseIndexer(DOWNLOAD_DIR)
 
-    if updated_files:
-        indexer.run_indexer(updated_files)
-    else:
+    indexed = indexer.run_indexer(updated_files) if updated_files else []
+    if not updated_files:
         print("No new files from SharePoint.")
+
+    # 3. Only files that were indexed are recorded as synced
+    for path in indexed:
+        syncer.commit(path)
+
+    # 4. Drop chunks of files removed or moved in SharePoint
+    deleted = syncer.apply_removals(indexer.delete_file)
+
+    return {
+        "synced": len(updated_files),
+        "indexed": len(indexed),
+        "failed": len(updated_files) - len(indexed),
+        "deleted": deleted,
+    }
 
 
 # --- Main Execution Flow ---
 if __name__ == "__main__":
-    DOWNLOAD_DIR = Path("./downloads")
+    summary = scheduled_indexing()
+    print(summary)
 
-    # 1. Run SharePoint Sync
-    syncer = SharePointSync(DOWNLOAD_DIR)
-    updated_files = syncer.run()
-
-    # 2. Run Indexer
-    # Note: If updated_files is empty, it means no changes in SharePoint.
-    # However, if the local DB is empty, you might want to force a full scan.
-
-    indexer = KnowledgeBaseIndexer(DOWNLOAD_DIR)
-
-    if updated_files:
-        indexer.run_indexer(updated_files)
-    else:
-        print("No new files from SharePoint.")
+    # If SharePoint had no changes but the local DB is empty, you might want to force a full scan.
+    if not summary["synced"]:
         user_input = input(
             "Do you want to run a full re-indexing of existing local files? (y/n): "
         )
         if user_input.lower() == "y":
-            indexer.run_indexer()
+            KnowledgeBaseIndexer(data_dir() / "downloads").run_indexer()
