@@ -1,9 +1,12 @@
+import asyncio
 import os
 import uvicorn
 import logging
 import sys
 import json
 import uuid
+
+from contextlib import asynccontextmanager
 
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -26,6 +29,7 @@ from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
 from auth import exchange_code_for_token, get_user_profile, AUTHORITY, CLIENT_ID
 from config import can_access_audio
+from db_setup import ensure_database
 from models.chat_request import ChatRequest
 from models.indexing_request import IndexingRequest
 from indexing_runner import (
@@ -56,7 +60,14 @@ def get_app_audio_graph():
     return _app_audio_graph
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Creates the search tables/functions if SUPABASE_DB_URL is set, and logs anything still missing
+    await asyncio.to_thread(ensure_database)
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 load_dotenv()
 
 

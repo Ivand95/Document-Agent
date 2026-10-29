@@ -33,6 +33,12 @@ class MainChatTest(unittest.TestCase):
     def token(self, **claims):
         return main.create_access_token({"department": "Tecnología", "position": "Analista", **claims})
 
+    def test_startup_prepares_the_database(self):
+        with mock.patch.object(main, "ensure_database") as ensure:
+            with TestClient(main.app) as client:  # `with` runs the lifespan
+                self.assertEqual(client.get("/health").json(), {"status": "ok"})
+        ensure.assert_called_once()
+
     def test_chat_endpoint_passes_messages_position_and_a_thread_id(self):
         r = self.client.post(
             "/chat", json={"message": "hola"}, headers={"Authorization": f"Bearer {self.token()}"}

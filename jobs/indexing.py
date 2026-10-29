@@ -16,6 +16,7 @@ from config import (  # noqa: E402
     SUPABASE_TABLE,
     global_supabase_client,
 )
+from db_setup import ensure_database  # noqa: E402
 from indexer import SharePointSync as DocsSync  # noqa: E402
 from indexing_runner import run_indexing  # noqa: E402
 from sharepoint_sync import data_dir  # noqa: E402
@@ -86,8 +87,10 @@ if __name__ == "__main__":
     if args.report:
         report()
     elif args.once or args.full:
+        ensure_database()
         run_all(force=args.full)
     else:
+        ensure_database()
         # Run at startup (state may be stale), then every INDEXING_INTERVAL_HOURS
         run_all()
         schedule.every(INTERVAL_HOURS).hours.do(run_all)
