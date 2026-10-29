@@ -202,6 +202,19 @@ class SharePointSyncTest(unittest.TestCase):
         self.assertEqual(capped.removed, [])
 
 
+    def test_files_indexed_with_another_chunking_version_are_reindexed(self):
+        tree = {"root": [file_item("1", "a.pdf")]}
+        old = self.sync(tree, version="1")
+        old.commit(old.updated_files[0])
+
+        same = self.sync(tree, version="1")
+        self.assertEqual(same.updated_files, [])
+
+        new = self.sync(tree, version="2")
+        self.assertEqual(len(new.updated_files), 1)
+        new.commit(new.updated_files[0])
+        self.assertEqual(self.sync(tree, version="2").updated_files, [])
+
     def test_db_key_is_independent_of_data_dir(self):
         import os
         from unittest import mock

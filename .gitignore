@@ -47,3 +47,7 @@ downloads_audio/*
 sync_state.json
 audio_sync_state.json
 *.pyc
+
+# Eval outputs contain real answers from internal documents
+evals/results/
+evals/candidates.jsonl

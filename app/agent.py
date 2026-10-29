@@ -1,193 +1,202 @@
-import os
-import sys
 import asyncio
-import json
+import logging
 import operator
-from typing import Annotated, List, Dict
+import sys
+from typing import Annotated, List
 from typing_extensions import TypedDict
-from dotenv import load_dotenv
 
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_core.documents import Document
-from langchain_core.messages import HumanMessage, BaseMessage, AIMessage
+from langchain_core.messages import BaseMessage
 from langgraph.checkpoint.memory import MemorySaver
-from supabase.client import create_client, Client
-
 from langgraph.graph import StateGraph, END
-from indexer import ChatAgent
+
+import llm
+import rag
 from config import (
-    global_supabase_client,
-    global_embedding_service_instance,
+    CATEGORY_LABELS,
+    RETRIEVAL_CANDIDATES,
+    RETRIEVAL_K,
+    RETRIEVAL_MATCH_THRESHOLD,
     SUPABASE_SCHEMA,
     get_department_categories,
+    global_embedding_service_instance,
+    global_supabase_client,
 )
 
+log = logging.getLogger("agent")
 
-load_dotenv()
+SYSTEM_PROMPT = """Eres el asistente interno de Cooperativa Barcelona (CoopBarcelona). \
+Ayudas a los empleados respondiendo con base en los fragmentos de documentos internos que aparecen en FUENTES.
 
-# Setup Supabase Client
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-# SUPABASE_SCHEMA = os.getenv("SUPABASE_SCHEMA", "public")  # Default to public if not set
-SUPABASE_TABLE = os.getenv(
-    "SUPABASE_TABLE", "documents"
-)  # Default to documents if not set
+Reglas:
+1. Responde siempre en español, en Markdown, con tono profesional y cordial.
+2. Si el mensaje es un saludo o charla casual, responde de forma breve y amable, sin citar fuentes.
+3. Si la pregunta es sobre la cooperativa, sus políticas, productos, procesos o datos internos, usa SOLO las FUENTES. \
+Cita cifras, plazos, requisitos y nombres exactamente como aparecen.
+4. Si las FUENTES no contienen la respuesta, dilo claramente ("No encontré esa información en los documentos \
+disponibles para tu departamento.") y NO uses conocimiento externo ni inventes. Si hay información parcial o \
+relacionada, preséntala indicando que es parcial.
+5. Si las FUENTES se contradicen, indícalo y menciona de qué documento viene cada dato.
+6. Si la pregunta no tiene relación con la cooperativa (cultura general), puedes responder brevemente sin citar fuentes.
+7. En "used_sources" lista los números de las [Fuente N] que realmente usaste (vacío si no usaste ninguna).
+8. En "tags" incluye de 2 a 5 palabras clave del tema."""
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+ANSWER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "used_sources": {"type": "array", "items": {"type": "integer"}},
+        "tags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["answer", "used_sources", "tags"],
+    "additionalProperties": False,
+}
 
-embeddings = OpenAIEmbeddings(api_key=os.getenv("LLM_SERVICE_API_KEY"))
-
-# Initialize Vector Store
-vector_store = SupabaseVectorStore(
-    client=supabase,
-    embedding=embeddings,
-    table_name=f"{SUPABASE_SCHEMA}.{SUPABASE_TABLE}",  # Ensure this matches your table
-    query_name="match_documents",  # Ensure you have the RPC function in SQL
-)
+FALLBACK_ERROR = "Lo siento, tuve un problema al generar la respuesta. Por favor intenta de nuevo."
 
 
 # --- Define State ---
 class AgentState(TypedDict):
-    #question: str
     position: str
     user_department: str
     messages: Annotated[List[BaseMessage], operator.add]
+    search_query: str
     context: List[Document]
     answer: dict
 
 
-# --- Initialize ChatAgent ---
-global_chat_agent_for_graph = ChatAgent()
-
-# --- Nodes ---
-
-
-def custom_supabase_search(query_text: str, department_filter: list[str], k: int = 8):
-    print(
-        f"DEBUG: custom_supabase_search called with query='{query_text}', department='{department_filter}'"
-    )
-
-    # 1. Generate Embedding using the global instance
+# --- Retrieval ---
+def search_documents(query_text, department_filter, k=RETRIEVAL_CANDIDATES):
+    """Vector search restricted to the categories the user may see."""
     query_vector = global_embedding_service_instance.get_embedding(query_text)
-
     if query_vector is None:
-        print(
-            "ERROR: Failed to generate embedding for query. Returning empty documents."
-        )
+        log.error("Failed to generate the query embedding")
         return []
 
-    # 2. Prepare RPC Parameters (still assuming the SQL uses `filter jsonb`)
-    if department_filter != []:
-        rpc_params = {
-            "query_embedding": query_vector,
-            "match_threshold": 0.5,
-            "match_count": k,
-            "allowed_categories": department_filter,
-        }
-    else:
-        rpc_params = {
-            "query_embedding": query_vector,
-            "match_threshold": 0.5,
-            "match_count": k,
-            "allowed_categories": department_filter,
-        }
-
+    rpc_params = {
+        "query_embedding": query_vector,
+        "match_threshold": RETRIEVAL_MATCH_THRESHOLD,
+        "match_count": k,
+        "allowed_categories": department_filter,
+    }
     try:
-        # 3. Execute RPC Call using the global client and explicit schema
         response = (
-            global_supabase_client.schema(
-                SUPABASE_SCHEMA
-            )  # Explicitly use the configured schema
+            global_supabase_client.schema(SUPABASE_SCHEMA)
             .rpc("match_documents", rpc_params)
             .execute()
         )
-        print(f"==>> global_supabase_client: {global_supabase_client}")
-
-        print(f"DEBUG: Supabase RPC response data length: {len(response.data)}")
-        print(f"DEBUG: Supabase RPC response data: {response.data}")
-        if not response.data:
-            print("DEBUG: No documents returned from Supabase RPC.")
-
-        # 4. Convert Supabase response dictionaries to LangChain Document objects
-        documents = []
-        for record in response.data:
-            content = record.get("content", "")
-            metadata = record.get("metadata", {})
-
-            doc = Document(page_content=content, metadata=metadata)
-            documents.append(doc)
-
-        print(
-            f"DEBUG: Converted {len(documents)} documents to LangChain Document objects."
-        )
-        return documents
-
-    except Exception as e:
-        print(f"Supabase Search Error in custom_supabase_search: {e}")
+    except Exception:
+        log.exception("Supabase search failed")
         return []
+
+    documents = []
+    for record in response.data:
+        metadata = dict(record.get("metadata") or {})
+        if "similarity" in record:
+            metadata["similarity"] = record["similarity"]
+        documents.append(Document(page_content=record.get("content", ""), metadata=metadata))
+    return documents
+
+
+def format_sources(docs):
+    parts = []
+    for i, doc in enumerate(docs, 1):
+        m = doc.metadata
+        header = [
+            f"Documento: {m.get('filename', 'Desconocido')}",
+            f"Departamento: {CATEGORY_LABELS.get(m.get('category'), m.get('category', 'N/D'))}",
+        ]
+        if m.get("section"):
+            header.append(f"Sección: {m['section']}")
+        if m.get("page_no"):
+            header.append(f"Página: {m['page_no']}")
+        parts.append(f"[Fuente {i}] " + " | ".join(header) + f"\n{doc.page_content}")
+    return "\n\n".join(parts)
+
+
+def build_references(docs, used_sources):
+    """References come from the chunks' metadata, never from the LLM's memory."""
+    picked = [
+        docs[i - 1]
+        for i in dict.fromkeys(used_sources)
+        if isinstance(i, int) and 1 <= i <= len(docs)
+    ]
+    sources, seen = [], set()
+    for doc in picked:
+        m = doc.metadata
+        source = {
+            "document": m.get("filename"),
+            "department": CATEGORY_LABELS.get(m.get("category"), m.get("category")),
+            "section": m.get("section"),
+            "page": m.get("page_no"),
+        }
+        key = tuple(source.values())
+        if key not in seen:
+            seen.add(key)
+            sources.append(source)
+
+    def unique(values):
+        return list(dict.fromkeys(v for v in values if v))
+
+    sections = [
+        f"{s['section']} (p. {s['page']})" if s["section"] and s["page"]
+        else s["section"] or (f"p. {s['page']}" if s["page"] else None)
+        for s in sources
+    ]
+    return {
+        "document_reference": ", ".join(unique(s["document"] for s in sources)),
+        "department_reference": ", ".join(unique(s["department"] for s in sources)),
+        "section_reference": "; ".join(unique(sections)),
+        "sources": sources,
+    }
+
+
+# --- Nodes ---
+async def rewrite_query(state: AgentState):
+    return {"search_query": await rag.rewrite_question(state["messages"])}
 
 
 def retrieve_documents(state: AgentState):
-    """
-    Retrieves documents filtering by the user's department and position.
-    """
-    if not state["messages"]:
-        return {"context": []}
+    """Retrieves chunks the user's department/position may see, then reranks them."""
+    query = state.get("search_query") or state["messages"][-1].content
+    filters = get_department_categories(state["user_department"], state.get("position", ""))
 
-    last_message = state["messages"][-1].content
-    department = state["user_department"]
-    position = state["position"]
-
-    print(f"--- Processing message: {last_message} for Department: {department} ---")
-
-    # METADATA FILTERING
-    # This assumes your vector metadata looks like: {"category": "HR", "source": "..."}
-    filters = get_department_categories(department, position)
-
-    # Perform similarity search with filter
-    docs = custom_supabase_search(last_message, filters, 4)
-
+    candidates = search_documents(query, filters)
+    docs = rag.rerank(query, candidates, RETRIEVAL_K)
+    log.info("Retrieved %d candidates, kept %d", len(candidates), len(docs))
     return {"context": docs}
 
 
 async def generate_answer(state: AgentState):
-    """
-    Generates answer and parses the JSON string into the state.
-    """
-    print("--- GENERATING JSON ANSWER ---")
-
-    history = state["messages"]
-    context_documents = state["context"]
-    query = history[-1].content if history else ""
-
-    # This gets the raw string from the LLM
-    raw_answer = await global_chat_agent_for_graph.generate_response(
-        query, history, context_documents
-    )
+    docs = state.get("context", [])
+    sources = format_sources(docs) or "(No se encontraron fragmentos relevantes.)"
+    messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\nFUENTES:\n{sources}"}]
+    messages += rag.to_openai_messages(rag.trim_history(state["messages"]))
 
     try:
-        # Clean the response in case the LLM included markdown code blocks like ```json ... ```
-        clean_json = raw_answer.strip().replace("```json", "").replace("```", "")
-        json_data = json.loads(clean_json)
-        
-        # We store the dictionary in the answer field
-        return {"answer": json_data, "messages": [AIMessage(content=raw_answer)]}
-    except Exception as e:
-        print(f"Error parsing JSON: {e}")
-        # Fallback if the LLM fails to output valid JSON
-        return {"answer": {"error": "JSON Error"}, "messages": [AIMessage(content=raw_answer)]}
+        data = await llm.chat_json(messages, "document_answer", ANSWER_SCHEMA)
+    except Exception:
+        log.exception("Answer generation failed")
+        answer = {"answer": FALLBACK_ERROR, "tags": [], **build_references([], [])}
+        return {"answer": answer, "messages": [rag.answer_message(FALLBACK_ERROR)]}
 
+    answer = {
+        "answer": data["answer"],
+        "tags": data["tags"],
+        **build_references(docs, data["used_sources"]),
+    }
+    return {"answer": answer, "messages": [rag.answer_message(data["answer"])]}
 
 
 # --- Graph Construction ---
-
 workflow = StateGraph(AgentState)
 
+workflow.add_node("rewrite", rewrite_query)
 workflow.add_node("retrieve", retrieve_documents)
 workflow.add_node("generate", generate_answer)
 
-workflow.set_entry_point("retrieve")
+workflow.set_entry_point("rewrite")
+workflow.add_edge("rewrite", "retrieve")
 workflow.add_edge("retrieve", "generate")
 workflow.add_edge("generate", END)
 
@@ -199,10 +208,7 @@ app_graph = workflow.compile(checkpointer=memory)
 # --- Main Execution ---
 if __name__ == "__main__":
     try:
-        agent = ChatAgent()
-        asyncio.run(agent.start_chat())
+        asyncio.run(rag.run_cli(app_graph))
     except KeyboardInterrupt:
         print("\nAgent: Goodbye! (Interrupted)")
         sys.exit(0)
-    except Exception as e:
-        print(f"\nCritical Error starting chat: {e}")

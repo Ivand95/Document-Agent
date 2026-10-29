@@ -64,6 +64,7 @@ class SharePointSyncBase:
         root_folder=None,
         force=False,
         limit=None,
+        version=None,
     ):
         self.tenant_id = os.getenv("OFFICE_365_TENANT_ID")
         self.client_id = os.getenv("OFFICE_365_CLIENT_ID")
@@ -77,6 +78,7 @@ class SharePointSyncBase:
         self.state_file = Path(state_file)
         self.force = force
         self.limit = limit  # max files to download per run; None = no cap
+        self.version = version  # chunking version; files indexed with another one are re-indexed
         self.scopes = ["https://graph.microsoft.com/.default"]
         self.headers = None
 
@@ -113,7 +115,11 @@ class SharePointSyncBase:
     def commit(self, local_path):
         """Record a file as indexed. Call only after its chunks were stored."""
         item_id, remote_mod = self._pending.pop(str(local_path))
-        self.sync_state[item_id] = {"modified": remote_mod, "path": str(local_path)}
+        self.sync_state[item_id] = {
+            "modified": remote_mod,
+            "path": str(local_path),
+            "version": self.version,
+        }
         self._save_state()
 
     def discard(self, entry):
@@ -243,6 +249,8 @@ class SharePointSyncBase:
             return True
         entry = self.sync_state.get(item["id"])
         if entry is None:
+            return True
+        if entry.get("version") != self.version:
             return True
         saved_time = dateutil.parser.isoparse(entry["modified"])
         remote_time = dateutil.parser.isoparse(item["lastModifiedDateTime"])

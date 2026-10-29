@@ -1,170 +1,259 @@
-import os
-import sys
 import asyncio
-import re
-import json
+import logging
 import operator
-from typing import Annotated, List, Dict, Optional
+import re
+import sys
+from datetime import datetime
+from typing import Annotated, List
 from typing_extensions import TypedDict
-from dotenv import load_dotenv
 
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_core.documents import Document
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage
 from langgraph.checkpoint.memory import MemorySaver
-from supabase.client import create_client, Client
-
 from langgraph.graph import StateGraph, END
-from audio_ingestion import ChatAgent
+
+import llm
+import rag
 from config import (
-    global_supabase_client,
-    global_embedding_service_instance,
+    AUDIO_MATCH_THRESHOLD,
+    RETRIEVAL_CANDIDATES,
+    RETRIEVAL_K,
     SUPABASE_SCHEMA,
-    SUPABASE_AUDIO_TABLE,  # Ensure this points to your audio table
+    global_embedding_service_instance,
+    global_supabase_client,
 )
 
-load_dotenv()
+log = logging.getLogger("audio_agent")
 
-# Setup Supabase Client
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SUPABASE_AUDIO_TABLE = os.getenv("SUPABASE_AUDIO_TABLE")
-SUPABASE_SCHEMA = os.getenv("SUPABASE_SCHEMA")
+SYSTEM_PROMPT = """Eres un analista de calidad de servicio de Cooperativa Barcelona. \
+Respondes preguntas sobre llamadas telefónicas usando SOLO las transcripciones de LLAMADAS.
+
+Reglas:
+1. Responde siempre en español, en Markdown, con tono profesional y cordial.
+2. Las transcripciones no traen etiquetas de quién habla: infiere por contexto quién es el Empleado (ofrece ayuda \
+o servicios) y quién es el Cliente (solicita ayuda o información).
+3. Cita datos exactos: fechas, extensiones, nombres y momentos de la llamada con el formato [MM:SS] cuando existan.
+4. Las métricas (sentimiento, propósito, resolución) están en el encabezado de cada llamada: úsalas tal cual y no \
+inventes otras. Para varias llamadas, compáralas o agrégalas indicando de cuáles hablas.
+5. Si LLAMADAS no contiene la información, responde "No encontré esa información en las conversaciones disponibles." \
+y no inventes. Si hay información parcial, preséntala indicando que es parcial.
+6. Si el mensaje es un saludo o charla casual, responde de forma breve y amable, sin citar llamadas.
+7. En "used_sources" lista los números de las [Llamada N] que realmente usaste (vacío si ninguna).
+8. En "action_items" lista las tareas pendientes mencionadas en esas llamadas (vacío si no hay).
+9. En "tags" incluye de 2 a 5 palabras clave del tema."""
+
+ANSWER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "used_sources": {"type": "array", "items": {"type": "integer"}},
+        "action_items": {"type": "array", "items": {"type": "string"}},
+        "tags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["answer", "used_sources", "action_items", "tags"],
+    "additionalProperties": False,
+}
+
+FALLBACK_ERROR = "Lo siento, tuve un problema al generar la respuesta. Por favor intenta de nuevo."
+
+ISO_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+DMY_DATE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b")  # dd/mm/yyyy
+EXPLICIT_EXT = re.compile(r"\bext(?:ensi[oó]n)?\.?\s*#?\s*(\d{3,4})\b", re.IGNORECASE)
+BARE_EXT = re.compile(r"\b(\d{4})\b")
+PHONE = re.compile(r"\b\d{7,15}\b")
 
 
 # --- Define State ---
 class AgentState(TypedDict):
     position: str
     user_department: str
+    messages: Annotated[List[BaseMessage], operator.add]
+    search_query: str
     context: List[Document]
     answer: dict
-    messages: Annotated[List[BaseMessage], operator.add]
 
 
-# --- Initialize ChatAgent ---
-global_chat_agent_for_graph = ChatAgent()
+def extract_filters(text):
+    """Extension / date / recipient mentioned in the question, to narrow the search."""
+    date = None
+    for pattern, order in ((ISO_DATE, (0, 1, 2)), (DMY_DATE, (2, 1, 0))):
+        match = pattern.search(text)
+        if match:
+            y, m, d = (match.group(i + 1) for i in order)
+            try:
+                date = datetime(int(y), int(m), int(d)).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+            text = text.replace(match.group(0), " ")  # its digits are not an extension/phone
+            break
 
-# --- Nodes ---
+    extension = None
+    explicit = EXPLICIT_EXT.search(text)
+    if explicit:
+        extension = explicit.group(1)
+    else:
+        # A bare 4-digit number is an extension unless it reads as a year
+        for match in BARE_EXT.finditer(text):
+            if not 1990 <= int(match.group(1)) <= 2100:
+                extension = match.group(1)
+                break
+
+    recipient = PHONE.search(text)
+    return {
+        "extension": extension,
+        "date": date,
+        "recipient": recipient.group(0) if recipient else None,
+    }
 
 
-def custom_supabase_search(query_text, extension=None, date=None, recipient=None, k=20):
+# --- Retrieval ---
+def search_conversations(query_text, filters, k=RETRIEVAL_CANDIDATES):
     query_vector = global_embedding_service_instance.get_embedding(query_text)
+    if query_vector is None:
+        log.error("Failed to generate the query embedding")
+        return []
 
     rpc_params = {
         "query_embedding": query_vector,
-        "match_threshold": 0.2,
+        "match_threshold": AUDIO_MATCH_THRESHOLD,
         "match_count": k,
-        "filter_extension": extension,
-        "filter_date": date,
-        "filter_recipient": recipient,
+        "filter_extension": filters["extension"],
+        "filter_date": filters["date"],
+        "filter_recipient": filters["recipient"],
     }
-
     try:
         response = (
             global_supabase_client.schema(SUPABASE_SCHEMA)
             .rpc("match_conversations", rpc_params)
             .execute()
         )
-
-        conversations = []
-        for record in response.data:
-            conversations.append(
-                Document(
-                    page_content=record.get("content", ""),
-                    metadata=record.get("metadata", {}),
-                )
-            )
-        return conversations
-    except Exception as e:
-        print(f"Search Error: {e}")
+    except Exception:
+        log.exception("Supabase search failed")
         return []
+
+    conversations = []
+    for record in response.data:
+        metadata = dict(record.get("metadata") or {})
+        if "similarity" in record:
+            metadata["similarity"] = record["similarity"]
+        conversations.append(
+            Document(page_content=record.get("content", ""), metadata=metadata)
+        )
+    return conversations
+
+
+def format_calls(docs):
+    parts = []
+    for i, doc in enumerate(docs, 1):
+        m = doc.metadata
+        header = [
+            f"Empleado: {m.get('employee_name', 'N/D')}",
+            f"Ext: {m.get('extension', 'N/D')}",
+            f"Fecha: {m.get('date_formatted', 'N/D')}",
+        ]
+        if m.get("phone_number"):
+            header.append(f"Teléfono: {m['phone_number']}")
+        if m.get("start") and m.get("end"):
+            header.append(f"Tramo: {m['start']}-{m['end']}")
+        if m.get("call_purpose"):
+            header.append(f"Propósito: {m['call_purpose']}")
+        if m.get("sentiment_score") is not None:
+            header.append(f"Sentimiento: {m['sentiment_score']}/10")
+        if m.get("resolution_status"):
+            header.append(f"Resolución: {m['resolution_status']}")
+        parts.append(f"[Llamada {i}] " + " | ".join(header) + f"\nTranscripción:\n{doc.page_content}")
+    return "\n\n".join(parts)
+
+
+def build_call_details(docs, used_sources, action_items, tags, text):
+    """Call data comes from the stored metadata, never from the LLM's memory."""
+    picked = [
+        docs[i - 1]
+        for i in dict.fromkeys(used_sources)
+        if isinstance(i, int) and 1 <= i <= len(docs)
+    ]
+    calls, seen = [], set()
+    for doc in picked:
+        m = doc.metadata
+        key = m.get("filename") or id(doc)
+        if key in seen:
+            continue
+        seen.add(key)
+        calls.append(
+            {
+                "filename": m.get("filename"),
+                "employee_name": m.get("employee_name"),
+                "extension": m.get("extension"),
+                "conversation_date": m.get("date_formatted"),
+                "phone_number": m.get("phone_number"),
+                "sentiment_score": m.get("sentiment_score"),
+                "call_purpose": m.get("call_purpose"),
+                "resolution_status": m.get("resolution_status"),
+                "summary": m.get("summary"),
+                "recommendation": m.get("recommendation"),
+            }
+        )
+
+    def joined(field):
+        return ", ".join(dict.fromkeys(str(c[field]) for c in calls if c[field]))
+
+    primary = calls[0] if calls else {}
+    return {
+        "answer": text,
+        "employee_name": joined("employee_name"),
+        "extension": joined("extension"),
+        "conversation_date": joined("conversation_date"),
+        "summary": primary.get("summary") or "",
+        "sentiment_score": primary.get("sentiment_score"),
+        "call_purpose": primary.get("call_purpose"),
+        "resolution_status": primary.get("resolution_status"),
+        "recommendation": primary.get("recommendation"),
+        "action_items": action_items,
+        "tags": tags,
+        "calls": calls,
+    }
+
+
+# --- Nodes ---
+async def rewrite_query(state: AgentState):
+    return {"search_query": await rag.rewrite_question(state["messages"])}
 
 
 def retrieve_conversations(state: AgentState):
-    if not state.get("messages"):
-        return {"context": []}
+    query = state.get("search_query") or state["messages"][-1].content
 
-    last_message = state["messages"][-1].content
-
-    # --- Extraction Logic ---
-    # 1. Detect Extension (4 digits)
-    ext_match = re.search(r"\b\d{4}\b", last_message)
-
-    # 2. Detect Date (YYYY-MM-DD)
-    date_match = re.search(r"\d{4}-\d{2}-\d{2}", last_message)
-
-    # 3. Detect Recipient (Phone number, usually 7-11 digits)
-    # We look for long numbers that aren't the date
-    recipient_match = re.search(r"\b\d{7,15}\b", last_message)
-
-    conversations = custom_supabase_search(
-        query_text=last_message,
-        extension=ext_match.group(0) if ext_match else None,
-        date=date_match.group(0) if date_match else None,
-        recipient=recipient_match.group(0) if recipient_match else None,
-        k=5,
-    )
-
-    return {"context": conversations}
+    candidates = search_conversations(query, extract_filters(query))
+    docs = rag.rerank(query, candidates, RETRIEVAL_K)
+    log.info("Retrieved %d candidates, kept %d", len(candidates), len(docs))
+    return {"context": docs}
 
 
 async def generate_answer(state: AgentState):
-    # Pass the whole message history to the LLM so it has context
-    history = state["messages"]
-    context_docs = state["context"]
-    query = history[-1].content if history else ""
-
-    # We modify ChatAgent.generate_response to accept the history (see Step 3)
-    raw_json_str = await global_chat_agent_for_graph.generate_response(
-        query, history, context_docs
-    )
+    docs = state.get("context", [])
+    calls = format_calls(docs) or "(No se encontraron llamadas relevantes.)"
+    messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\nLLAMADAS:\n{calls}"}]
+    messages += rag.to_openai_messages(rag.trim_history(state["messages"]))
 
     try:
-        data = json.loads(raw_json_str.strip().replace("```json", "").replace("```", ""))
-        
-        # 2. Extract metrics from metadata of the first relevant document
-        # This gives the agent "real" data even if the LLM hallucinations
-        first_doc_meta = context_docs[0].metadata if context_docs else {}
+        data = await llm.chat_json(messages, "audio_answer", ANSWER_SCHEMA)
+    except Exception:
+        log.exception("Answer generation failed")
+        answer = build_call_details([], [], [], [], FALLBACK_ERROR)
+        return {"answer": answer, "messages": [rag.answer_message(FALLBACK_ERROR)]}
 
-        return {
-            "answer": data,
-            "messages": [AIMessage(content=raw_json_str)],
-            "sentiment_score": first_doc_meta.get("sentiment_score", data.get("sentiment_score")),
-            "call_purpose": first_doc_meta.get("call_purpose", data.get("call_purpose")),
-            "resolution_status": first_doc_meta.get("resolution_status", data.get("resolution_status")),
-            "action_items": data.get("action_items", [])
-        }
-
-    except:
-        return {
-            "answer": {"error": "JSON Error"},
-            "messages": [AIMessage(content=raw_json_str)],
-        }
-
-
-# Example of how to invoke and see the result
-async def test_run():
-    inputs = {
-        "question": "Dame un resumen de la extension 1055",
-        "user_department": "General",
-    }
-    final_state = await app_audio_graph.ainvoke(inputs)
-
-    ans = final_state["answer"]
-    print(f"Empleado: {ans.get('nombre_empleado')}")
-    print(f"Resumen: {ans.get('sumario')}")
-
-
-if __name__ == "__main__":
-    asyncio.run(test_run())
+    answer = build_call_details(
+        docs, data["used_sources"], data["action_items"], data["tags"], data["answer"]
+    )
+    return {"answer": answer, "messages": [rag.answer_message(data["answer"])]}
 
 
 # --- Graph Construction ---
 workflow = StateGraph(AgentState)
+workflow.add_node("rewrite", rewrite_query)
 workflow.add_node("retrieve", retrieve_conversations)
 workflow.add_node("generate", generate_answer)
-workflow.set_entry_point("retrieve")
+workflow.set_entry_point("rewrite")
+workflow.add_edge("rewrite", "retrieve")
 workflow.add_edge("retrieve", "generate")
 workflow.add_edge("generate", END)
 
@@ -174,10 +263,7 @@ app_audio_graph = workflow.compile(checkpointer=memory)
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # This runs the interactive loop from audio_ingestion.ChatAgent
-    # or you can invoke app_audio_graph.ainvoke(...) for a single turn
     try:
-        agent = ChatAgent()
-        asyncio.run(agent.start_chat())
+        asyncio.run(rag.run_cli(app_audio_graph))
     except KeyboardInterrupt:
         sys.exit(0)

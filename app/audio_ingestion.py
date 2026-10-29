@@ -5,7 +5,6 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
 # --- Indexing imports ---
 from supabase import create_client, Client
@@ -17,9 +16,9 @@ from docling.pipeline.asr_pipeline import AsrPipeline
 import openai
 import google.generativeai as genai
 
-from langchain_core.documents import Document
 from sharepoint_sync import SharePointSyncBase, data_dir, db_key
 from config import (
+    LIGHT_MODEL,
     global_supabase_client,
     global_embedding_service_instance,
     SUPABASE_SCHEMA,
@@ -37,6 +36,10 @@ load_dotenv()
 # Folder inside the conversations library that holds the 3CX call recordings
 DEFAULT_AUDIO_FOLDER = "3CX Recordings"
 
+# Bump when chunking changes: calls indexed with another version are re-indexed on the next sync
+CHUNKING_VERSION = "2"
+CHUNK_CHARS = 1200
+
 
 class SharePointSync(SharePointSyncBase):
     def __init__(self, download_dir, force=False, limit=None, folder_path=None):
@@ -53,6 +56,7 @@ class SharePointSync(SharePointSyncBase):
             ),
             force=force,
             limit=limit,
+            version=CHUNKING_VERSION,
         )
 
         # REGEX: [Name]_Ext-Phone_Timestamp.wav (Phone must be 7-15 digits to filter out extension-to-extension)
@@ -153,7 +157,7 @@ class KnowledgeBaseIndexer:
         # Call your LLM (using the same logic as ChatAgent)
         response = await asyncio.to_thread(
             self.chat_client.chat.completions.create,
-            model="gpt-4o-mini",  # Use a smaller/cheaper model for this
+            model=LIGHT_MODEL,  # Use a smaller/cheaper model for this
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
@@ -174,72 +178,111 @@ class KnowledgeBaseIndexer:
             print(f"Failed to delete chunks for {file_path}: {e}")
             return False
 
+    def transcript_items(self, doc):
+        """[(text, start_seconds, end_seconds)] for every non-empty ASR segment."""
+        items = []
+        for t in doc.texts:
+            text = t.text.strip()
+            if not text:
+                continue
+            track = next(
+                (s for s in (t.source or []) if getattr(s, "start_time", None) is not None),
+                None,
+            )
+            items.append(
+                (text, track.start_time if track else None, track.end_time if track else None)
+            )
+        return items
+
+    def build_chunks(self, items, base_meta):
+        """Groups segments into ~CHUNK_CHARS chunks. Every chunk gets the same call-level metadata
+        plus its own position and time range. `content` keeps [MM:SS] markers for the LLM;
+        `embedding_text` is the plain speech."""
+        groups, current, size = [], [], 0
+        for item in items:
+            current.append(item)
+            size += len(item[0]) + 1
+            if size >= CHUNK_CHARS:
+                groups.append(current)
+                current, size = [], 0
+        if current:
+            groups.append(current)
+
+        rows = []
+        for i, group in enumerate(groups):
+            lines = [
+                f"[{self.format_timestamp(start)}] {text}" if start is not None else text
+                for text, start, _ in group
+            ]
+            metadata = {**base_meta, "chunk_index": i, "chunk_total": len(groups)}
+            starts = [s for _, s, _ in group if s is not None]
+            ends = [e for _, _, e in group if e is not None]
+            if starts and ends:
+                metadata.update(
+                    start_time=starts[0],
+                    end_time=ends[-1],
+                    start=self.format_timestamp(starts[0]),
+                    end=self.format_timestamp(ends[-1]),
+                )
+            rows.append(
+                {
+                    "content": "\n".join(lines),
+                    "embedding_text": " ".join(text for text, _, _ in group),
+                    "metadata": metadata,
+                }
+            )
+        return rows
+
     async def index_file(self, file_path) -> bool:
         """Returns True when the file is fully indexed (or has nothing to index)."""
         print(f"Processing and Analyzing: {file_path.name}")
         try:
             result = self.converter.convert(file_path)
-            # 1. Combine all text to get a full transcript for analysis
-            full_transcript = " ".join([item.text for item in result.document.texts])
+            items = self.transcript_items(result.document)
+            if not items:
+                print(f"No speech found in {file_path.name}")
+                return self.delete_file(file_path)
 
-            # 2. Get the analysis metrics
-            analysis = await self.analyze_full_transcript(full_transcript)
+            # 1. Analyze the whole call to get sentiment/purpose/etc.
+            analysis = await self.analyze_full_transcript(
+                " ".join(text for text, _, _ in items)
+            )
 
-            file_meta = self.extract_metadata_from_name(file_path.name)
-            category = self.get_category_from_path(file_path)
+            # 2. Same metadata on every chunk of the call
+            base_meta = {
+                "filepath": db_key(file_path),
+                "filename": file_path.name,
+                "category": self.get_category_from_path(file_path),
+                **self.extract_metadata_from_name(file_path.name),
+                **analysis,
+            }
+            rows = self.build_chunks(items, base_meta)
 
-            chunks_to_insert = []
-            combined_text = ""
+            # 3. Embed in batches
+            vectors = self.embedder.get_embeddings([r["embedding_text"] for r in rows])
+            if vectors is None:
+                # Keep the old chunks and retry on the next run instead of storing a partial call
+                print(f"Embedding failed for {file_path.name}; keeping old chunks.")
+                return False
 
-            for item in result.document.texts:
-                combined_text += item.text + " "
-                if len(combined_text) >= 1200:
-                    vector = self.embedder.get_embedding(combined_text)
-                    if not vector:
-                        # Keep the old chunks and retry on the next run instead of storing a partial call
-                        print(f"Embedding failed for {file_path.name}; keeping old chunks.")
-                        return False
-                    chunks_to_insert.append(
-                        {
-                            "content": combined_text.strip(),
-                            "embedding": vector,
-                            "metadata": {
-                                "filepath": db_key(file_path),
-                                "filename": file_path.name,
-                                "category": category,
-                                **file_meta,
-                                **analysis,  # <--- INJECT ANALYSIS INTO METADATA
-                            },
-                        }
-                    )
-                    combined_text = ""
+            chunks_to_insert = [
+                {
+                    "content": r["content"],
+                    "metadata": r["metadata"],
+                    "embedding": vector,
+                }
+                for r, vector in zip(rows, vectors)
+            ]
 
-            # 4. Handle remaining text
-            if combined_text.strip():
-                vector = self.embedder.get_embedding(combined_text)
-                if not vector:
-                    print(f"Embedding failed for {file_path.name}; keeping old chunks.")
-                    return False
-                chunks_to_insert.append(
-                    {
-                        "content": combined_text.strip(),
-                        "embedding": vector,
-                        "metadata": {"filepath": db_key(file_path), **file_meta},
-                    }
-                )
-
-            # 5. Replace old entries only once the new chunks are ready
+            # 4. Replace old entries only once the new chunks are ready
             if not self.delete_file(file_path):
                 return False
 
-            if chunks_to_insert:
-                for i in range(0, len(chunks_to_insert), 10):
-                    self.supabase.schema(self.db_schema).table(self.db_table).insert(
-                        chunks_to_insert[i : i + 10]
-                    ).execute()
-                print(
-                    f"Finished {file_path.name}: Created {len(chunks_to_insert)} larger chunks."
-                )
+            for i in range(0, len(chunks_to_insert), 10):
+                self.supabase.schema(self.db_schema).table(self.db_table).insert(
+                    chunks_to_insert[i : i + 10]
+                ).execute()
+            print(f"Finished {file_path.name}: Created {len(chunks_to_insert)} chunks.")
             return True
 
         except Exception as e:
@@ -261,184 +304,6 @@ class KnowledgeBaseIndexer:
             if await self.index_file(f):
                 indexed.append(f)
         return indexed
-
-
-# --- Part 3: Interactive Chat Agent Audio ---
-class ChatAgent:
-    def __init__(self):
-        self.supabase: Client = global_supabase_client
-        self.embedder = global_embedding_service_instance
-        self.db_schema = SUPABASE_SCHEMA
-
-        # Configure the LLM for chat generation
-        if LLM_SERVICE == "openai":
-            self.chat_client = openai.OpenAI(api_key=LLM_API_KEY)
-        elif LLM_SERVICE == "gemini":
-            genai.configure(api_key=LLM_API_KEY)
-            self.chat_model = genai.GenerativeModel("gemini-pro")
-
-    def search_documents(self, query_text, match_count=5):
-        """Searches the vector database for relevant content."""
-        query_vector = self.embedder.get_embedding(query_text)
-
-        # Call the RPC function we created in SQL
-        # Note: RPC calls ignore .schema(), so we baked the schema 'private' into the SQL function itself.
-        # If your function name is just 'match_documents' inside schema 'private', you call it as is.
-        try:
-            rpc_params = {
-                "query_embedding": query_vector,
-                "match_threshold": 0.5,  # Adjust based on strictness needed
-                "match_count": match_count,
-            }
-
-            # Note: The supabase-py client handles schema slightly differently for RPC.
-            # Usually, RPC functions are globally accessible if permissions allow,
-            # but if it's strictly inside a schema, ensure your user has search_path set or function is public.
-            # Assuming the SQL function 'match_documents' was created in the schema defined:
-
-            response = (
-                self.supabase.schema(self.db_schema)
-                .rpc("match_conversations", rpc_params)
-                .execute()
-            )
-
-            return response.data
-
-        except Exception as e:
-            print(f"Search Error: {e}")
-            return []
-
-    async def generate_response(self, query, message_history, context_chunks):
-        # Format the context to help the AI infer roles
-        context_text = ""
-        for doc in context_chunks:
-            meta = doc.metadata
-            context_text += f"\n--- LLAMADA DE: {meta.get('employee_name')} (Ext: {meta.get('extension')}) ---\n"
-            context_text += f"Fecha: {meta.get('date_formatted')}\n"
-            context_text += f"Transcripción:\n{doc.page_content}\n"
-
-        # 2. Build Messages for OpenAI
-        # Start with the System Prompt
-
-        system_prompt = """You are an expert quality assurance and conversation analist for Cooperativa Barcelona. 
-        Your objective is to analyze audio transcriptions for the company and extract metrics in JSON format. You always answer in JSON format.
-        
-        Guidelines:
-        1. ROLE INFERENCE: Even if the text has no tags, identify the 'Employee' (who offers help/services) and the 'Customer' (who requests help/information) from the context.
-        2. LANGUAGE: Always respond in Spanish.
-        3. ACCURACY: If the information is not in the context, use "Not available".
-        4. FORMAT: Return ONLY a valid JSON object. No text before or after.
-        5. If the user's input is a greeting, small talk, or a general question (like 'How are you?' or 'What is the capital of France?'), answer naturally and amicably without referencing documents.
-        6. If the user asks a specific question about the conversations, calls, transcripts, or any other audio related information, use the provided Context to answer as detailed as possible.
-        7. If the question requires audio related information but the information is NOT in the Context, politely say: "I'm sorry, I couldn't find that specific information in the audio conversations available to me." and provide the most relevant information available.
-        8. If chunks of text are provided, use them to answer the question.
-        9. Always maintain a polite and helpful tone.
-        10. Always return a summary of the conversation, call, or transcript in the answer.
-        
-        
-
-        METRICS TO EXTRACT:
-
-        - 'answer': Direct response to the user's question.
-        - 'sentiment_score': Number from 1 to 10 (1: very frustrated, 10: very satisfied).
-        - 'call_purpose': Category (Technical Support, Billing, Complaint, Sales, General, Information).
-        - 'resolution_status': Was the problem resolved? (Resolved / Pending / Unavailable).
-        - 'action_items': List of pending tasks mentioned.
-        - 'summary': A 3-5 sentence executive summary of the call.
-        - 'recommendation': A recommendation given to increase sentiment_score.
-
-        Desired JSON Output:
-        {
-            "answer": [Answer] or "No disponible",
-            "conversation_date": [Conversation date],
-            "employee_name": [Employee name],
-            "extension": [Extension number],
-            "tags": [Tags] or "No disponible",
-            "summary": [Summary] or "No disponible"
-            "sentiment_score": 0,
-            "call_purpose": "...",
-            "resolution_status": "...",
-            "action_items": [],
-            "recommendation": "..."
-        }
-
-        Example:
-        {
-            "answer": "The conversation between John Doe and Jane Smith was about the project XYZ...",
-            "conversation_date": "2026-04-13",
-            "employee_name": "John Doe",
-            "extension": "1234",
-            "tags": "project XYZ, conversation, call, transcript",
-            "summary": "The conversation between John Doe and Jane Smith was about the project XYZ...",
-            "sentiment_score": 0,
-            "call_purpose": "...",
-            "resolution_status": "...",
-            "action_items": [],
-            "recommendation": "..."
-        }
-        """
-
-        full_prompt = f"Context:\n{context_text}\n\nQuestion: {query}"
-
-        messages = [
-            {
-                "role": "system",
-                "content": system_prompt + f"\nContexto de documentos:\n{context_text}",
-            }
-        ]
-
-        # Add the conversation history
-        for msg in message_history:
-            role = "user" if isinstance(msg, HumanMessage) else "assistant"
-            messages.append({"role": role, "content": msg.content})
-
-        # 3. Call LLM
-        if LLM_SERVICE == "openai":
-            response = await asyncio.to_thread(
-                self.chat_client.chat.completions.create,
-                model="gpt-4o",
-                response_format={"type": "json_object"},
-                messages=messages,
-            )
-            return response.choices[0].message.content
-
-        elif LLM_SERVICE == "gemini":
-            # Run the asynchronous Gemini call in a background thread
-            prompt = f"{system_prompt}\n\n{message_history}"
-            response = await asyncio.to_thread(self.chat_model.generate_content, prompt)
-            return response.text
-
-        return "LLM Service not configured for Chat."
-
-    async def start_chat(self):
-        print("\n" + "=" * 50)
-        print("SharePoint Agent Ready. Type 'exit' or 'quit' to stop.")
-        print("=" * 50)
-
-        while True:
-            user_input = input("\nYou: ")
-            if user_input.lower() in ["exit", "quit", "bye"]:
-                print("Agent: Goodbye!")
-                break
-
-            # 1. Retrieve
-            results = self.search_documents(user_input)
-
-            # 2. Generate
-            if not results:
-                answer = await self.generate_response(user_input, [])
-                print(f"Agent: {answer}")
-                continue
-
-            answer = await self.generate_response(user_input, results)
-            try:
-                # Pretty print if it's a valid JSON string
-                parsed = json.loads(answer.replace("```json", "").replace("```", ""))
-                print(
-                    f"Agent (JSON):\n{json.dumps(parsed, indent=4, ensure_ascii=False)}"
-                )
-            except:
-                print(f"Agent: {answer}")
 
 
 # --- Scheduled Indexing Execution Flow ---

@@ -25,6 +25,7 @@ from fastapi.security import (
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
 from auth import exchange_code_for_token, get_user_profile, AUTHORITY, CLIENT_ID
+from config import can_access_audio
 from models.chat_request import ChatRequest
 from models.indexing_request import IndexingRequest
 from indexing_runner import (
@@ -88,24 +89,25 @@ def create_access_token(data: dict):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def get_current_user_dept(
+def get_current_user_claims(
     credentials: HTTPAuthorizationCredentials = Depends(oauth2_scheme),
 ):
     """
-    Decodes the JWT to find the user's department.
+    Decodes the JWT and returns its claims (department and position are required).
     Middleware-like dependency for protected routes.
     """
     token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        department = payload.get("department")
-        if department is None:
-            raise HTTPException(
-                status_code=401, detail="Token missing department scope"
-            )
-        return department
     except JWTError:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
+    if payload.get("department") is None:
+        raise HTTPException(status_code=401, detail="Token missing department scope")
+    return payload
+
+
+def get_current_user_dept(claims: dict = Depends(get_current_user_claims)):
+    return claims["department"]
 
 
 # --- WebSocket Auth Helper ---
@@ -210,24 +212,26 @@ async def auth_callback(code: str):
 
 @app.post("/chat")
 async def chat_endpoint(
-    request: ChatRequest, department: str = Depends(get_current_user_dept)
+    request: ChatRequest, claims: dict = Depends(get_current_user_claims)
 ):
     """
-    Authorized endpoint.
+    Authorized, stateless endpoint (use the WebSocket for conversations).
     1. Validates JWT.
-    2. Extracts Department.
+    2. Extracts Department and Position.
     3. Runs Agent with Department Filter.
     """
-
-    print(f"User from Department '{department}' is asking: {request.message}")
+    department = claims["department"]
+    print(f"Chat request from department '{department}'")
 
     inputs = {
-        "question": request.message,
+        "messages": [HumanMessage(content=request.message)],
         "user_department": department,  # Security context injection
+        "position": claims.get("position") or "",
     }
+    # The graph has a checkpointer, so every call needs a thread id; a fresh one keeps this stateless
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
 
-    # Run the graph
-    result = await get_app_graph().ainvoke(inputs)
+    result = await get_app_graph().ainvoke(inputs, config=config)
 
     return {"response": result["answer"], "department_context_used": department}
 
@@ -371,8 +375,13 @@ async def websocket_chat_audio(
     # 1. Accept Connection & Validate Auth Manually
     # The `get_current_user_dept_ws` function is used here to perform authentication
     # and will close the connection if authentication fails.
-    department = await get_current_user_dept_ws(websocket, token)
+    department, position = await get_current_user_dept_ws(websocket, token)
     if not department:
+        return
+
+    # Call recordings are sensitive: only managers and explicitly allowed departments
+    if not can_access_audio(department, position):
+        await websocket.close(code=1008, reason="Not authorized for audio conversations")
         return
 
     await websocket.accept()
@@ -431,6 +440,7 @@ async def websocket_chat_audio(
             inputs = {
                 "messages": [HumanMessage(content=user_message)],
                 "user_department": department,
+                "position": position,
             }
 
             # Pass the session id to LangGraph
@@ -445,6 +455,7 @@ async def websocket_chat_audio(
                 "type": "answer",
                 "content": answer,
                 "department_context": department,
+                "position_context": position,
                 "timestamp": datetime.utcnow().isoformat() + "Z",
             }
             await websocket.send_text(json.dumps(response_payload))
