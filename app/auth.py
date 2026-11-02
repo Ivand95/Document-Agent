@@ -18,8 +18,8 @@ SHAREPOINT_SITE_ID = os.getenv("SHAREPOINT_SITE_ID", "your_site_id_here")
 SHAREPOINT_DRIVE_ID = os.getenv("SHAREPOINT_DRIVE_ID", "your_drive_id_here")
 
 
-async def exchange_code_for_token(code: str):
-    """Exchanges the auth code for an access token."""
+async def exchange_code_for_token(code: str, code_verifier: str):
+    """Exchanges the auth code (and the PKCE verifier) for an access token."""
     async with httpx.AsyncClient() as client:
         data = {
             "client_id": CLIENT_ID,
@@ -28,6 +28,7 @@ async def exchange_code_for_token(code: str):
             "redirect_uri": f"{REDIRECT_URI}/auth/callback",
             "grant_type": "authorization_code",
             "client_secret": CLIENT_SECRET,
+            "code_verifier": code_verifier,
         }
         resp = await client.post(f"{AUTHORITY}/oauth2/v2.0/token", data=data)
         if resp.status_code != 200:

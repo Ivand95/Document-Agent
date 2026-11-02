@@ -13,7 +13,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { useNavigate } from "react-router";
 import remarkGfm from "remark-gfm";
-import { audioAgentWebSocket, documentAgentWebSocket } from "../utils/axios";
+import {
+  audioAgentWebSocket,
+  documentAgentWebSocket,
+  logoutSession,
+} from "../utils/axios";
 import "./style.css";
 
 type MessageRole = "user" | "assistant";
@@ -453,7 +457,15 @@ const MessageBubble = ({ msg }: { msg: Message }) => (
     )}
     <div className="chat-message-bubble">
       <div className="chat-message-content">
-        <Markdown remarkPlugins={[remarkGfm]}>{msg.content.answer}</Markdown>
+        <Markdown
+          remarkPlugins={[remarkGfm]}
+          // Model output is untrusted: an image loads (and can leak data) on its own, so none is rendered,
+          // and links show only their text
+          disallowedElements={["img"]}
+          components={{ a: ({ children }) => <>{children}</> }}
+        >
+          {msg.content.answer}
+        </Markdown>
       </div>
       {msg.role === "assistant" && <MessageReferences content={msg.content} />}
       <time
@@ -485,6 +497,7 @@ export const Chat = (props: {
   const navigate = useNavigate();
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const tokenRef = useRef(props.userInfo.access_token);
   const [agentId, setAgentId] = useState<AgentId>("document");
 
   const currentAgent = useMemo(
@@ -494,7 +507,7 @@ export const Chat = (props: {
 
   useEffect(() => {
     const agent = AGENTS.find((a) => a.id === agentId) ?? AGENTS[0];
-    const ws = agent.connect(props.userInfo.access_token);
+    const ws = agent.connect(tokenRef.current);
     wsRef.current = ws;
     setWsConnected(false);
 
@@ -512,7 +525,17 @@ export const Chat = (props: {
           {
             id: crypto.randomUUID(),
             role: "assistant",
-            content: data.content,
+            // Errors arrive as plain text; show them like any other answer
+            content:
+              data.type === "error"
+                ? ({
+                    answer: String(data.content),
+                    department_reference: "",
+                    document_reference: "",
+                    section_reference: "",
+                    tags: "",
+                  } as documentMessageContent)
+                : data.content,
             timestamp: new Date(),
           },
         ]);
@@ -533,7 +556,16 @@ export const Chat = (props: {
       }
       if (wsRef.current === ws) wsRef.current = null;
     };
-  }, [agentId, props.userInfo.access_token]);
+  }, [agentId]);
+
+  // A renewed token reaches the open connection without reconnecting (that would reset the conversation)
+  useEffect(() => {
+    tokenRef.current = props.userInfo.access_token;
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "auth", token: props.userInfo.access_token }));
+    }
+  }, [props.userInfo.access_token]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -600,6 +632,8 @@ export const Chat = (props: {
   };
 
   const handleLogout = () => {
+    // Revoke the token on the server; the local sign-out must not depend on it
+    logoutSession(props.userInfo.access_token).catch(() => {});
     navigate("/", { replace: true });
     props.setUserInfo({
       access_token: "",

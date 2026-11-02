@@ -7,6 +7,7 @@ import json
 import uuid
 
 from contextlib import asynccontextmanager
+from urllib.parse import urlencode
 
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -25,8 +26,8 @@ from fastapi.security import (
     HTTPAuthorizationCredentials,
     HTTPBearer,
 )
-from jose import jwt, JWTError
-from datetime import datetime, timedelta, timezone
+from jose import JWTError
+from datetime import datetime, timezone
 from auth import exchange_code_for_token, get_user_profile, AUTHORITY, CLIENT_ID
 from config import can_access_audio
 from db_setup import ensure_database
@@ -37,9 +38,29 @@ from indexing_runner import (
     indexing_status,
     start_indexing,
 )
+from security import (
+    MAX_MESSAGE_CHARS,
+    consume_login,
+    create_access_token,
+    decode_token,
+    frontend_origins,
+    is_production,
+    new_login,
+    origin_allowed,
+    refresh_token,
+    revoke_token,
+    validate_settings,
+)
+
+log = logging.getLogger("main")
 
 _app_graph = None
 _app_audio_graph = None
+
+LOGIN_ERROR = "No se pudo completar el inicio de sesión. Intenta de nuevo."
+INTERNAL_ERROR = "Ocurrió un error interno. Código: {cid}"
+# A JSON frame carries the message plus a few small fields
+MAX_FRAME_CHARS = MAX_MESSAGE_CHARS * 2 + 512
 
 
 def get_app_graph():
@@ -62,6 +83,8 @@ def get_app_audio_graph():
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Refuses to start in production with an unsafe JWT secret or CORS origin
+    validate_settings()
     # Creates the search tables/functions if SUPABASE_DB_URL is set, and logs anything still missing
     await asyncio.to_thread(ensure_database)
     yield
@@ -76,28 +99,17 @@ def health_check():
     return {"status": "ok"}
 
 
-# Add CORS middleware
-_frontend_url = os.getenv("FRONTEND_URL", "*")
+# Add CORS middleware (production requires explicit origins, see validate_settings)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[_frontend_url] if _frontend_url != "*" else ["*"],
+    allow_origins=frontend_origins() or ["*"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-# JWT Configuration (For session management)
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-production")
 REDIRECT_URI = os.getenv("AUTH_REDIRECT_URI", "http://localhost:8000")
-ALGORITHM = "HS256"
 oauth2_scheme = HTTPBearer()
-
-
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(hours=12)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def get_current_user_claims(
@@ -107,9 +119,8 @@ def get_current_user_claims(
     Decodes the JWT and returns its claims (department and position are required).
     Middleware-like dependency for protected routes.
     """
-    token = credentials.credentials
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = decode_token(credentials.credentials)
     except JWTError:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
     if payload.get("department") is None:
@@ -121,61 +132,75 @@ def get_current_user_dept(claims: dict = Depends(get_current_user_claims)):
     return claims["department"]
 
 
-# --- WebSocket Auth Helper ---
-async def get_current_user_dept_ws(websocket: WebSocket, token: str = Query(...)):
-    """
-    WebSocket Authentication Dependency.
-    Extracts token from query param ?token=...
-    If authentication fails, closes the WebSocket connection.
-    """
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        department = payload.get("department")
-        position = payload.get("position")
-        if department is None or position is None:
-            # We close with a specific policy violation code if auth fails
-            # 1008 is "Policy Violation"
-            await websocket.close(
-                code=1008, reason="Token missing department or position scope"
-            )
-            return None, None
-        return department, position
-    except JWTError:
-        await websocket.close(code=1008, reason="Could not validate credentials")
-        return None, None
-
-
 # --- Auth Endpoints ---
 
 
 @app.get("/login")
-def login():
-    """Generates the Microsoft Login URL."""
-    scope = "User.Read offline_access"
-    login_url = (
-        f"{AUTHORITY}/oauth2/v2.0/authorize"
-        f"?client_id={CLIENT_ID}"
-        f"&response_type=code"
-        f"&redirect_uri={REDIRECT_URI}/auth/callback"
-        f"&response_mode=query"
-        f"&scope={scope}"
+def login(request: Request):
+    """Generates the Microsoft Login URL (with `state` and PKCE)."""
+    origin = request.headers.get("origin")
+    if not origin_allowed(origin):
+        raise HTTPException(status_code=403, detail="Origin not allowed")
+    state, challenge = new_login(origin)
+    query = urlencode(
+        {
+            "client_id": CLIENT_ID,
+            "response_type": "code",
+            "redirect_uri": f"{REDIRECT_URI}/auth/callback",
+            "response_mode": "query",
+            "scope": "User.Read offline_access",
+            "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        }
     )
-    return {"login_url": login_url}
+    return {"login_url": f"{AUTHORITY}/oauth2/v2.0/authorize?{query}"}
+
+
+def callback_page(payload: dict, target_origin: str) -> str:
+    """Page that hands the result to the window that opened the login popup."""
+    # `<` is escaped so a value like "</script>" can't end the script block
+    data = json.dumps(payload).replace("<", "\\u003c")
+    target = json.dumps(target_origin).replace("<", "\\u003c")
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Autenticación completada</title></head>
+    <body>
+        <p>Autenticación completada. Esta ventana se cerrará automáticamente.</p>
+        <script>
+            if (window.opener) {{
+                window.opener.postMessage({data}, {target});
+            }}
+            window.close();
+        </script>
+    </body>
+    </html>
+    """
 
 
 @app.get("/auth/callback", response_class=HTMLResponse)
-async def auth_callback(code: str):
+async def auth_callback(
+    code: str | None = None, state: str | None = None, error: str | None = None
+):
     """
-    1. Exchange code for MS Graph Token
-    2. Get User Profile (Department)
-    3. Mint internal JWT with department
-    4. Return HTML that sends data to the opener window via postMessage
+    1. Checks `state` (one-time) and recovers the PKCE verifier
+    2. Exchange code for MS Graph Token
+    3. Get User Profile (Department)
+    4. Mint internal JWT with department
+    5. Return HTML that sends data to the opener window (only to the origin that started the login)
     """
-    try:
-        ms_token_data = await exchange_code_for_token(code)
-        access_token = ms_token_data.get("access_token")
+    verifier, opener = consume_login(state)
+    target = opener or "*"
+    failure = {"type": "ms-auth-callback", "error": LOGIN_ERROR}
 
-        user_profile = await get_user_profile(access_token)
+    if verifier is None or error or not code:
+        log.warning("Login rejected: unknown or expired state, or the identity provider returned an error")
+        return callback_page(failure, target)
+
+    try:
+        ms_token_data = await exchange_code_for_token(code, verifier)
+        user_profile = await get_user_profile(ms_token_data.get("access_token"))
 
         session_token = create_access_token(
             {
@@ -185,40 +210,35 @@ async def auth_callback(code: str):
                 "position": user_profile.position,
             }
         )
+        payload = {
+            "type": "ms-auth-callback",
+            "access_token": session_token,
+            "name": user_profile.name,
+            "email": user_profile.email,
+            "department": user_profile.department,
+            "position": user_profile.position,
+        }
+    except Exception:
+        log.exception("Login failed")  # details stay in the server log
+        payload = failure
 
-        payload = json.dumps(
-            {
-                "type": "ms-auth-callback",
-                "access_token": session_token,
-                "name": user_profile.name,
-                "email": user_profile.email,
-                "department": user_profile.department,
-                "position": user_profile.position,
-            }
-        )
-    except Exception as e:
-        payload = json.dumps(
-            {
-                "type": "ms-auth-callback",
-                "error": str(e),
-            }
-        )
+    return callback_page(payload, target)
 
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head><title>Autenticación completada</title></head>
-    <body>
-        <p>Autenticación completada. Esta ventana se cerrará automáticamente.</p>
-        <script>
-            if (window.opener) {{
-                window.opener.postMessage({payload}, "*");
-            }}
-            window.close();
-        </script>
-    </body>
-    </html>
-    """
+
+@app.post("/auth/refresh")
+async def auth_refresh(claims: dict = Depends(get_current_user_claims)):
+    """New short-lived token for the same session (it can't outlive SESSION_MAX_HOURS)."""
+    try:
+        return {"access_token": refresh_token(claims)}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Session expired")
+
+
+@app.post("/auth/logout")
+async def auth_logout(claims: dict = Depends(get_current_user_claims)):
+    """Invalidates the current token (open WebSockets stop answering with it)."""
+    revoke_token(claims)
+    return {"status": "ok"}
 
 
 @app.post("/chat")
@@ -232,7 +252,7 @@ async def chat_endpoint(
     3. Runs Agent with Department Filter.
     """
     department = claims["department"]
-    print(f"Chat request from department '{department}'")
+    log.info("Chat request from department '%s' (%d chars)", department, len(request.message))
 
     inputs = {
         "messages": [HumanMessage(content=request.message)],
@@ -247,255 +267,147 @@ async def chat_endpoint(
     return {"response": result["answer"], "department_context_used": department}
 
 
-# --- WebSocket Endpoint ---
+# --- WebSocket chat (documents and audio share the same protocol) ---
 
 
-@app.websocket("/ws/chat")
-async def websocket_chat(
-    websocket: WebSocket,
-    token: str = Query(...),  # Auth token expected in the query string
-):
+def parse_frame(data: str) -> dict:
+    """JSON frames are dicts; anything else is a plain-text message."""
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        return {"message": data}
+    return parsed if isinstance(parsed, dict) else {"message": data}
+
+
+async def send_error(websocket: WebSocket, content: str):
+    await websocket.send_text(json.dumps({"type": "error", "content": content}))
+
+
+async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
     """
-    WebSocket endpoint for chat.
-    Client connects to: ws://localhost:8000/ws/chat?token=YOUR_JWT_HERE (ws://127.0.0.1:8000/ws/chat?token=YOUR_JWT_HERE if using IPV6 addresses)
+    Client connects to: ws://host/ws/chat?token=YOUR_JWT_HERE (or /ws/chat/audio).
+    The token is checked on connect and again before every message (expiry, revocation).
+    A client renews it without reconnecting by sending {"type": "auth", "token": "<new token>"}.
     """
-
-    # 1. Accept Connection & Validate Auth Manually
-    # The `get_current_user_dept_ws` function is used here to perform authentication
-    # and will close the connection if authentication fails.
-    department, position = await get_current_user_dept_ws(websocket, token)
-    if not department:
+    if not origin_allowed(websocket.headers.get("origin")):
+        await websocket.close(code=1008, reason="Origin not allowed")
         return
 
-    await websocket.accept()
-
-    # 1. CREATE A UNIQUE ID FOR THIS SPECIFIC CHAT SESSION
-    session_id = str(uuid.uuid4())
-    # print(
-    #     f"WS Connection accepted for Department: {department} and Position: {position} (Session: {session_id})"
-    # )
-
     try:
-        while True:
-            # 2. Receive Message from client
-            data = await websocket.receive_text()
-
-            # (Optional) Attempt to parse the incoming message as JSON,
-            # otherwise treat it as a plain text message.
-            try:
-                message_data = json.loads(data)
-                user_message = message_data.get("message", "")
-                if not user_message:
-                    # If JSON was parsed but 'message' key is missing or empty
-                    await websocket.send_text(
-                        json.dumps(
-                            {
-                                "type": "error",
-                                "content": "Message content missing in JSON.",
-                            }
-                        )
-                    )
-                    continue
-            except json.JSONDecodeError:
-                # If it's not valid JSON, treat it as plain text
-                user_message = data
-                if not user_message.strip():  # Check for empty messages
-                    await websocket.send_text(
-                        json.dumps(
-                            {"type": "error", "content": "Empty message received."}
-                        )
-                    )
-                    continue
-            except Exception as e:  # Catch other potential issues during parsing
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "error",
-                            "content": f"Failed to process message: {str(e)}",
-                        }
-                    )
-                )
-                continue
-
-            print(f"Department '{department}' asks: {user_message}")
-
-            # 3. Prepare inputs for your Agent (e.g., LangGraph)
-            inputs = {
-                "messages": [HumanMessage(content=user_message)],
-                "user_department": department,
-                "position": position,
-            }
-
-            # Pass the session id to LangGraph
-            # This tells LangGraph to isolate this conversation's state
-            config = {"configurable": {"thread_id": session_id}}
-
-            result = await get_app_graph().ainvoke(inputs, config=config)
-            answer = result.get("answer", "No answer could be generated.")
-
-            # 4. Send Response back to the client
-            response_payload = {
-                "type": "answer",
-                "content": answer,
-                "department_context": department,
-                "position_context": position,
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-            }
-            await websocket.send_text(json.dumps(response_payload))
-
-    except WebSocketDisconnect:
-        # This exception is raised when the client disconnects
-        print(
-            f"Client from Department '{department}' disconnected. Session ID: {session_id}"
-        )
-    except Exception as e:
-        # Catch any other unexpected errors during the WebSocket session
-        print(
-            f"Unexpected WebSocket error for Department '{department}': {e}. Session ID: {session_id}"
-        )
-        # Attempt to send an error message to the client before potentially closing the connection
-        try:
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "error",
-                        "content": f"An internal server error occurred: {str(e)}",
-                    }
-                )
-            )
-        except RuntimeError as rt_e:
-            # If the client is already disconnected, send_text might fail
-            print(f"Could not send error message to client: {rt_e}")
-        finally:
-            await websocket.close(code=1011)
-
-
-# --- WebSocket Endpoint Audio ---
-
-
-@app.websocket("/ws/chat/audio")
-async def websocket_chat_audio(
-    websocket: WebSocket,
-    token: str = Query(...),  # Auth token expected in the query string
-):
-    """
-    WebSocket endpoint for chat audio.
-    Client connects to: ws://localhost:8000/ws/chat/audio?token=YOUR_JWT_HERE (ws://127.0.0.1:8000/ws/chat/audio?token=YOUR_JWT_HERE if using IPV6 addresses)
-    """
-
-    # 1. Accept Connection & Validate Auth Manually
-    # The `get_current_user_dept_ws` function is used here to perform authentication
-    # and will close the connection if authentication fails.
-    department, position = await get_current_user_dept_ws(websocket, token)
-    if not department:
+        claims = decode_token(token)
+    except JWTError:
+        await websocket.close(code=1008, reason="Could not validate credentials")
+        return
+    department, position = claims.get("department"), claims.get("position")
+    if department is None or position is None:
+        await websocket.close(code=1008, reason="Token missing department or position scope")
         return
 
     # Call recordings are sensitive: only managers and explicitly allowed departments
-    if not can_access_audio(department, position):
+    if audio and not can_access_audio(department, position):
         await websocket.close(code=1008, reason="Not authorized for audio conversations")
         return
 
     await websocket.accept()
-
-    # 1. CREATE A UNIQUE ID FOR THIS SPECIFIC CHAT SESSION
+    # Each connection is its own conversation: LangGraph keeps its state under this id
     session_id = str(uuid.uuid4())
-    print(
-        f"WS Connection accepted for Department: {department} (Session: {session_id})"
-    )
+    log.info("WS accepted for department '%s' (session %s, audio=%s)", department, session_id, audio)
 
     try:
         while True:
-            # 2. Receive Message from client
             data = await websocket.receive_text()
+            cid = uuid.uuid4().hex[:8]  # lets a user report an error without exposing details
 
-            # (Optional) Attempt to parse the incoming message as JSON,
-            # otherwise treat it as a plain text message.
-            try:
-                message_data = json.loads(data)
-                user_message = message_data.get("message", "")
-                if not user_message:
-                    # If JSON was parsed but 'message' key is missing or empty
-                    await websocket.send_text(
-                        json.dumps(
-                            {
-                                "type": "error",
-                                "content": "Message content missing in JSON.",
-                            }
-                        )
-                    )
-                    continue
-            except json.JSONDecodeError:
-                # If it's not valid JSON, treat it as plain text
-                user_message = data
-                if not user_message.strip():  # Check for empty messages
-                    await websocket.send_text(
-                        json.dumps(
-                            {"type": "error", "content": "Empty message received."}
-                        )
-                    )
-                    continue
-            except Exception as e:  # Catch other potential issues during parsing
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "error",
-                            "content": f"Failed to process message: {str(e)}",
-                        }
-                    )
-                )
+            if len(data) > MAX_FRAME_CHARS:
+                await send_error(websocket, f"El mensaje es demasiado largo (máximo {MAX_MESSAGE_CHARS} caracteres).")
                 continue
 
-            print(f"Department '{department}' asks: {user_message}")
+            frame = parse_frame(data)
 
-            # 3. Prepare inputs for your Agent (e.g., LangGraph)
+            # Expired or revoked tokens end the conversation
+            try:
+                claims = decode_token(token)
+            except JWTError:
+                if frame.get("type") != "auth":
+                    await send_error(websocket, "Tu sesión expiró. Inicia sesión de nuevo.")
+                    await websocket.close(code=1008)
+                    return
+
+            if frame.get("type") == "auth":
+                try:
+                    renewed = decode_token(str(frame.get("token", "")))
+                except JWTError:
+                    await send_error(websocket, "Tu sesión expiró. Inicia sesión de nuevo.")
+                    await websocket.close(code=1008)
+                    return
+                same_user = renewed.get("sub") == claims.get("sub")
+                if not same_user or renewed.get("department") is None or renewed.get("position") is None:
+                    await websocket.close(code=1008, reason="Could not validate credentials")
+                    return
+                token, claims = frame["token"], renewed
+                department, position = renewed["department"], renewed["position"]
+                if audio and not can_access_audio(department, position):
+                    await websocket.close(code=1008, reason="Not authorized for audio conversations")
+                    return
+                continue
+
+            user_message = frame.get("message")
+            if not isinstance(user_message, str) or not user_message.strip():
+                await send_error(websocket, "Mensaje vacío.")
+                continue
+            if len(user_message) > MAX_MESSAGE_CHARS:
+                await send_error(websocket, f"El mensaje es demasiado largo (máximo {MAX_MESSAGE_CHARS} caracteres).")
+                continue
+
+            # The question itself is not logged: it can contain member data
+            log.info("[%s] question from department '%s' (%d chars)", cid, department, len(user_message))
+
             inputs = {
                 "messages": [HumanMessage(content=user_message)],
                 "user_department": department,
                 "position": position,
             }
-
-            # Pass the session id to LangGraph
-            # This tells LangGraph to isolate this conversation's state
             config = {"configurable": {"thread_id": session_id}}
 
-            result = await get_app_audio_graph().ainvoke(inputs, config=config)
-            answer = result.get("answer", "No answer could be generated.")
+            try:
+                result = await get_graph().ainvoke(inputs, config=config)
+            except Exception:
+                log.exception("[%s] agent failed", cid)
+                await send_error(websocket, INTERNAL_ERROR.format(cid=cid))
+                continue
 
-            # 4. Send Response back to the client
-            response_payload = {
-                "type": "answer",
-                "content": answer,
-                "department_context": department,
-                "position_context": position,
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-            }
-            await websocket.send_text(json.dumps(response_payload))
-
-    except WebSocketDisconnect:
-        # This exception is raised when the client disconnects
-        print(
-            f"Client from Department '{department}' disconnected. Session ID: {session_id}"
-        )
-    except Exception as e:
-        # Catch any other unexpected errors during the WebSocket session
-        print(
-            f"Unexpected WebSocket error for Department '{department}': {e}. Session ID: {session_id}"
-        )
-        # Attempt to send an error message to the client before potentially closing the connection
-        try:
             await websocket.send_text(
                 json.dumps(
                     {
-                        "type": "error",
-                        "content": f"An internal server error occurred: {str(e)}",
+                        "type": "answer",
+                        "content": result.get("answer", "No answer could be generated."),
+                        "department_context": department,
+                        "position_context": position,
+                        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                     }
                 )
             )
-        except RuntimeError as rt_e:
-            # If the client is already disconnected, send_text might fail
-            print(f"Could not send error message to client: {rt_e}")
+
+    except WebSocketDisconnect:
+        log.info("Client from department '%s' disconnected (session %s)", department, session_id)
+    except Exception:
+        log.exception("Unexpected WebSocket error (session %s)", session_id)
+        try:
+            await send_error(websocket, INTERNAL_ERROR.format(cid=session_id[:8]))
+        except RuntimeError:
+            pass  # the client is already gone
         finally:
             await websocket.close(code=1011)
+
+
+@app.websocket("/ws/chat")
+async def websocket_chat(websocket: WebSocket, token: str = Query(...)):
+    await chat_socket(websocket, token, get_app_graph, audio=False)
+
+
+@app.websocket("/ws/chat/audio")
+async def websocket_chat_audio(websocket: WebSocket, token: str = Query(...)):
+    await chat_socket(websocket, token, get_app_audio_graph, audio=True)
 
 
 # --- Manual indexing (non-production only) ---

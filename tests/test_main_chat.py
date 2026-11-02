@@ -23,6 +23,10 @@ class FakeGraph:
 
 class MainChatTest(unittest.TestCase):
     def setUp(self):
+        # Development mode: no FRONTEND_URL is configured in tests (production rules live in test_security)
+        patcher = mock.patch.dict(os.environ, {"APP_ENV": "test"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.client = TestClient(main.app)
         self.graph = FakeGraph()
         for name in ("get_app_graph", "get_app_audio_graph"):

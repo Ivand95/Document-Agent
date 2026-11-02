@@ -23,4 +23,4 @@ COPY jobs/ ./jobs/
 
 EXPOSE ${PORT:-8000}
 
-CMD ["/bin/sh", "-c", "uv run uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-keep-alive 120"]
+CMD ["/bin/sh", "-c", "uv run uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-keep-alive 120 --ws-max-size 65536"]

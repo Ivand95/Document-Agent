@@ -16,6 +16,16 @@ const http = axios.create({
 
 export const login = () => http.get("/login");
 
+const bearer = (token: string) => ({ headers: { Authorization: `Bearer ${token}` } });
+
+/** Exchanges a still-valid token for a new one (same session, never past its absolute limit). */
+export const refreshSession = (token: string) =>
+  http.post<{ access_token: string }>("/auth/refresh", null, bearer(token));
+
+/** Revokes the token on the server. */
+export const logoutSession = (token: string) =>
+  http.post("/auth/logout", null, bearer(token));
+
 export const documentAgentWebSocket = (token: string) => {
   return new WebSocket(`${WS_URL}/ws/chat?token=${token}`);
 };
