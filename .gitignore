@@ -51,3 +51,9 @@ audio_sync_state.json
 # Eval outputs contain real answers from internal documents
 evals/results/
 evals/candidates.jsonl
+
+# Local documentation (plans, deploy notes)
+docs/
+
+# Python bytecode
+__pycache__/
