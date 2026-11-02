@@ -11,6 +11,16 @@ import config  # noqa: E402
 import indexer  # noqa: E402
 
 
+class AsrModelTest(unittest.TestCase):
+    def test_known_names_resolve(self):
+        for name in ("turbo", "SMALL", " base "):
+            self.assertIsNotNone(audio_ingestion.asr_spec(name))
+
+    def test_unknown_name_lists_options(self):
+        with self.assertRaisesRegex(ValueError, "Options"):
+            audio_ingestion.asr_spec("huge")
+
+
 class AudioChunkingTest(unittest.TestCase):
     def setUp(self):
         # Chunking needs no models or clients, skip the heavy __init__

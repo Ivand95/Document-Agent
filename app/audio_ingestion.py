@@ -2,6 +2,7 @@ import os
 import json
 import re
 import asyncio
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -28,6 +29,7 @@ from config import (
     LLM_API_KEY,
     SUPABASE_AUDIO_TABLE,
     INDEXING_PAUSE_SECONDS,
+    ASR_MODEL,
 )
 
 load_dotenv()
@@ -82,11 +84,20 @@ class SharePointSync(SharePointSyncBase):
 
 
 # --- Part 2: Audio Indexer ---
+def asr_spec(name):
+    """Docling Whisper spec for an ASR_MODEL name (tiny, base, small, medium, large, turbo)."""
+    spec = getattr(asr_model_specs, f"WHISPER_{name.strip().upper()}", None)
+    if spec is None:
+        options = "tiny, base, small, medium, large, turbo"
+        raise ValueError(f"Unknown ASR_MODEL '{name}'. Options: {options}")
+    return spec
+
+
 class KnowledgeBaseIndexer:
     def __init__(self, root_dir):
-        # Configure ASR pipeline
+        # Configure ASR pipeline (smaller Whisper models are faster on CPU, with less accuracy)
         pipeline_options = AsrPipelineOptions(
-            asr_options=asr_model_specs.WHISPER_TURBO, language="es"
+            asr_options=asr_spec(ASR_MODEL), language="es"
         )
         format_options = {
             InputFormat.AUDIO: AudioFormatOption(
@@ -238,7 +249,9 @@ class KnowledgeBaseIndexer:
         """Returns True when the file is fully indexed (or has nothing to index)."""
         print(f"Processing and Analyzing: {file_path.name}")
         try:
+            started = time.time()
             result = self.converter.convert(file_path)
+            print(f"Transcribed {file_path.name} in {time.time() - started:.0f}s")
             items = self.transcript_items(result.document)
             if not items:
                 print(f"No speech found in {file_path.name}")
