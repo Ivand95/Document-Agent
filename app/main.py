@@ -28,7 +28,7 @@ from fastapi.security import (
 )
 from jose import JWTError
 from datetime import datetime, timezone
-from auth import exchange_code_for_token, get_user_profile, AUTHORITY, CLIENT_ID
+from auth import exchange_code_for_token, get_user_profile, AUTHORITY, CLIENT_ID, LOGIN_SCOPE
 from config import can_access_audio
 from db_setup import ensure_database
 from models.chat_request import ChatRequest
@@ -148,7 +148,7 @@ def login(request: Request):
             "response_type": "code",
             "redirect_uri": f"{REDIRECT_URI}/auth/callback",
             "response_mode": "query",
-            "scope": "User.Read offline_access",
+            "scope": LOGIN_SCOPE,
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",

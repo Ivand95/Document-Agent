@@ -161,7 +161,9 @@ class PostgresIntegrationTest(unittest.TestCase):
                 (content, __import__("json").dumps(meta), unit_vector(i)),
             )
 
-    def search(self, conn, query, threshold=0.5, count=10, categories=None):
+    ALL = ["HR", "IT", "OTROS"]
+
+    def search(self, conn, query, threshold=0.5, count=10, categories=ALL):
         return conn.execute(
             f"select content, similarity from {self.schema}.match_documents(%s::vector, %s, %s, %s::text[]) order by similarity desc, content",
             (unit_vector(query), threshold, count, categories),
@@ -169,7 +171,7 @@ class PostgresIntegrationTest(unittest.TestCase):
 
     def test_fresh_database_gets_tables_functions_and_working_search(self):
         applied = db_setup.apply_migrations(self.dsn)
-        self.assertEqual(applied, ["0001_vector_search"])
+        self.assertEqual(applied, ["0001_vector_search", "0002_deny_by_default"])
 
         with self.connect() as c:
             self.fill(c)
@@ -198,9 +200,32 @@ class PostgresIntegrationTest(unittest.TestCase):
         with self.connect() as c:
             self.fill(c)
             rows = c.execute(
-                f"select content from {self.schema}.match_documents(%s::vector)", (unit_vector(0),)
+                f"select content from {self.schema}.match_conversations(%s::vector)", (unit_vector(0),)
             ).fetchall()
-            self.assertEqual({r[0] for r in rows}, {"vacaciones", "general"})
+            self.assertEqual({r[0] for r in rows}, {"hola", "adios"})
+
+    def test_document_search_denies_by_default(self):
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            self.fill(c)
+            self.assertEqual(self.search(c, 0, categories=None), [])  # no filter given
+            self.assertEqual(self.search(c, 0, categories=[]), [])
+            # the default argument is the same as NULL
+            rows = c.execute(
+                f"select content from {self.schema}.match_documents(%s::vector, -1)", (unit_vector(0),)
+            ).fetchall()
+            self.assertEqual(rows, [])
+
+    def test_document_search_only_returns_allowed_categories(self):
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            self.fill(c)
+            seen = lambda cats: {h[0] for h in self.search(c, 0, threshold=-1, categories=cats)}  # noqa: E731
+            self.assertEqual(seen(["HR"]), {"vacaciones"})
+            self.assertEqual(seen(["IT", "OTROS"]), {"soporte", "general"})
+            self.assertEqual(seen(["FI"]), set())
+            self.assertEqual(seen(["hr"]), set())  # category codes are exact, not case-folded
+            self.assertEqual(seen(["HR", "IT", "OTROS"]), {"vacaciones", "soporte", "general"})
 
     def test_indexes_exist_and_are_used_by_delete_by_file(self):
         db_setup.apply_migrations(self.dsn)
@@ -283,12 +308,12 @@ class PostgresIntegrationTest(unittest.TestCase):
         self.use_schema("public")
         with self.connect() as c:  # another app already owns a table and a migrations-like table in public
             c.execute("create table public.schema_migrations (version text)")
-        self.assertEqual(db_setup.apply_migrations(self.dsn), ["0001_vector_search"])
+        self.assertEqual(db_setup.apply_migrations(self.dsn), ["0001_vector_search", "0002_deny_by_default"])
         with self.connect() as c:
             self.fill(c)
             self.assertEqual([h[0] for h in self.search(c, 0, categories=["HR"])], ["vacaciones"])
             tracked = c.execute(f"select version from public.{db_setup.TRACKING_TABLE}").fetchall()
-            self.assertEqual(tracked, [("0001_vector_search",)])
+            self.assertEqual(tracked, [("0001_vector_search",), ("0002_deny_by_default",)])
             c.execute("set role service_role")
             self.assertEqual(len(self.search(c, 0)), 2)
 
@@ -321,7 +346,7 @@ class PostgresIntegrationTest(unittest.TestCase):
 
         with ThreadPoolExecutor(4) as pool:
             results = list(pool.map(lambda _: db_setup.apply_migrations(self.dsn), range(4)))
-        self.assertEqual(sorted(len(r) for r in results), [0, 0, 0, 1])
+        self.assertEqual(sorted(len(r) for r in results), [0, 0, 0, 2])  # one runner applies both migrations
 
 
 if __name__ == "__main__":

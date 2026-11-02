@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, END
 
 import llm
+import prompt_safety
 import rag
 from config import (
     AUDIO_MATCH_THRESHOLD,
@@ -26,7 +27,7 @@ from config import (
 log = logging.getLogger("audio_agent")
 
 SYSTEM_PROMPT = """Eres un analista de calidad de servicio de Cooperativa Barcelona. \
-Respondes preguntas sobre llamadas telefónicas usando SOLO las transcripciones de LLAMADAS.
+Respondes preguntas sobre llamadas telefónicas usando SOLO las transcripciones de <llamadas>.
 
 Reglas:
 1. Responde siempre en español, en Markdown, con tono profesional y cordial.
@@ -35,12 +36,13 @@ o servicios) y quién es el Cliente (solicita ayuda o información).
 3. Cita datos exactos: fechas, extensiones, nombres y momentos de la llamada con el formato [MM:SS] cuando existan.
 4. Las métricas (sentimiento, propósito, resolución) están en el encabezado de cada llamada: úsalas tal cual y no \
 inventes otras. Para varias llamadas, compáralas o agrégalas indicando de cuáles hablas.
-5. Si LLAMADAS no contiene la información, responde "No encontré esa información en las conversaciones disponibles." \
+5. Si <llamadas> no contiene la información, responde "No encontré esa información en las conversaciones disponibles." \
 y no inventes. Si hay información parcial, preséntala indicando que es parcial.
 6. Si el mensaje es un saludo o charla casual, responde de forma breve y amable, sin citar llamadas.
-7. En "used_sources" lista los números de las [Llamada N] que realmente usaste (vacío si ninguna).
+7. En "used_sources" lista los id de las <llamada id="N"> que realmente usaste (vacío si ninguna).
 8. En "action_items" lista las tareas pendientes mencionadas en esas llamadas (vacío si no hay).
 9. En "tags" incluye de 2 a 5 palabras clave del tema."""
+SYSTEM_PROMPT += prompt_safety.UNTRUSTED_RULE
 
 ANSWER_SCHEMA = {
     "type": "object",
@@ -71,6 +73,7 @@ class AgentState(TypedDict):
     search_query: str
     context: List[Document]
     answer: dict
+    blocked: bool
 
 
 def extract_filters(text):
@@ -143,26 +146,26 @@ def search_conversations(query_text, filters, k=RETRIEVAL_CANDIDATES):
 
 
 def format_calls(docs):
-    parts = []
-    for i, doc in enumerate(docs, 1):
+    """Retrieved call chunks as delimited data (empty string when there are none)."""
+    if not docs:
+        return ""
+    entries = []
+    for doc in docs:
         m = doc.metadata
-        header = [
-            f"Empleado: {m.get('employee_name', 'N/D')}",
-            f"Ext: {m.get('extension', 'N/D')}",
-            f"Fecha: {m.get('date_formatted', 'N/D')}",
-        ]
-        if m.get("phone_number"):
-            header.append(f"Teléfono: {m['phone_number']}")
-        if m.get("start") and m.get("end"):
-            header.append(f"Tramo: {m['start']}-{m['end']}")
-        if m.get("call_purpose"):
-            header.append(f"Propósito: {m['call_purpose']}")
-        if m.get("sentiment_score") is not None:
-            header.append(f"Sentimiento: {m['sentiment_score']}/10")
-        if m.get("resolution_status"):
-            header.append(f"Resolución: {m['resolution_status']}")
-        parts.append(f"[Llamada {i}] " + " | ".join(header) + f"\nTranscripción:\n{doc.page_content}")
-    return "\n\n".join(parts)
+        tramo = f"{m['start']}-{m['end']}" if m.get("start") and m.get("end") else None
+        score = m.get("sentiment_score")
+        attrs = {
+            "empleado": m.get("employee_name", "N/D"),
+            "ext": m.get("extension", "N/D"),
+            "fecha": m.get("date_formatted", "N/D"),
+            "telefono": m.get("phone_number"),
+            "tramo": tramo,
+            "proposito": m.get("call_purpose"),
+            "sentimiento": f"{score}/10" if score is not None else None,
+            "resolucion": m.get("resolution_status"),
+        }
+        entries.append((attrs, doc.page_content))
+    return prompt_safety.wrap_untrusted("llamadas", "llamada", entries)
 
 
 def build_call_details(docs, used_sources, action_items, tags, text):
@@ -215,6 +218,18 @@ def build_call_details(docs, used_sources, action_items, tags, text):
 
 
 # --- Nodes ---
+async def guard_question(state: AgentState):
+    """Stops attempts to manipulate the model before anything is searched or generated."""
+    reason = await prompt_safety.check_question(state["messages"][-1].content)
+    if reason is None:
+        return {"blocked": False}
+    log.warning(
+        "Prompt injection attempt blocked (department=%s, rule=%s)", state.get("user_department"), reason
+    )
+    answer = build_call_details([], [], [], [], prompt_safety.BLOCKED_MESSAGE)
+    return {"blocked": True, "answer": answer, "messages": [rag.answer_message(prompt_safety.BLOCKED_MESSAGE)]}
+
+
 async def rewrite_query(state: AgentState):
     return {"search_query": await rag.rewrite_question(state["messages"])}
 
@@ -222,7 +237,7 @@ async def rewrite_query(state: AgentState):
 def retrieve_conversations(state: AgentState):
     query = state.get("search_query") or state["messages"][-1].content
 
-    candidates = search_conversations(query, extract_filters(query))
+    candidates = prompt_safety.drop_injected(search_conversations(query, extract_filters(query)))
     docs = rag.rerank(query, candidates, RETRIEVAL_K)
     log.info("Retrieved %d candidates, kept %d", len(candidates), len(docs))
     return {"context": docs}
@@ -230,9 +245,12 @@ def retrieve_conversations(state: AgentState):
 
 async def generate_answer(state: AgentState):
     docs = state.get("context", [])
-    calls = format_calls(docs) or "(No se encontraron llamadas relevantes.)"
-    messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\nLLAMADAS:\n{calls}"}]
-    messages += rag.to_openai_messages(rag.trim_history(state["messages"]))
+    calls = format_calls(docs) or "<llamadas>\n(No se encontraron llamadas relevantes.)\n</llamadas>"
+    history = rag.to_openai_messages(rag.trim_history(state["messages"]))
+    # The retrieved text travels as data in its own message, right before the user's question
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages += history[:-1]
+    messages += [{"role": "user", "content": calls}, history[-1]]
 
     try:
         data = await llm.chat_json(messages, "audio_answer", ANSWER_SCHEMA)
@@ -249,10 +267,12 @@ async def generate_answer(state: AgentState):
 
 # --- Graph Construction ---
 workflow = StateGraph(AgentState)
+workflow.add_node("guard", guard_question)
 workflow.add_node("rewrite", rewrite_query)
 workflow.add_node("retrieve", retrieve_conversations)
 workflow.add_node("generate", generate_answer)
-workflow.set_entry_point("rewrite")
+workflow.set_entry_point("guard")
+workflow.add_conditional_edges("guard", lambda s: END if s.get("blocked") else "rewrite")
 workflow.add_edge("rewrite", "retrieve")
 workflow.add_edge("retrieve", "generate")
 workflow.add_edge("generate", END)

@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, END
 
 import llm
+import prompt_safety
 import rag
 from config import (
     CATEGORY_LABELS,
@@ -26,20 +27,21 @@ from config import (
 log = logging.getLogger("agent")
 
 SYSTEM_PROMPT = """Eres el asistente interno de Cooperativa Barcelona (CoopBarcelona). \
-Ayudas a los empleados respondiendo con base en los fragmentos de documentos internos que aparecen en FUENTES.
+Ayudas a los empleados respondiendo con base en los fragmentos de documentos internos que aparecen en <fuentes>.
 
 Reglas:
 1. Responde siempre en español, en Markdown, con tono profesional y cordial.
 2. Si el mensaje es un saludo o charla casual, responde de forma breve y amable, sin citar fuentes.
-3. Si la pregunta es sobre la cooperativa, sus políticas, productos, procesos o datos internos, usa SOLO las FUENTES. \
+3. Si la pregunta es sobre la cooperativa, sus políticas, productos, procesos o datos internos, usa SOLO las <fuentes>. \
 Cita cifras, plazos, requisitos y nombres exactamente como aparecen.
-4. Si las FUENTES no contienen la respuesta, dilo claramente ("No encontré esa información en los documentos \
+4. Si las <fuentes> no contienen la respuesta, dilo claramente ("No encontré esa información en los documentos \
 disponibles para tu departamento.") y NO uses conocimiento externo ni inventes. Si hay información parcial o \
 relacionada, preséntala indicando que es parcial.
-5. Si las FUENTES se contradicen, indícalo y menciona de qué documento viene cada dato.
+5. Si las <fuentes> se contradicen, indícalo y menciona de qué documento viene cada dato.
 6. Si la pregunta no tiene relación con la cooperativa (cultura general), puedes responder brevemente sin citar fuentes.
-7. En "used_sources" lista los números de las [Fuente N] que realmente usaste (vacío si no usaste ninguna).
+7. En "used_sources" lista los id de las <fuente id="N"> que realmente usaste (vacío si no usaste ninguna).
 8. En "tags" incluye de 2 a 5 palabras clave del tema."""
+SYSTEM_PROMPT += prompt_safety.UNTRUSTED_RULE
 
 ANSWER_SCHEMA = {
     "type": "object",
@@ -63,6 +65,7 @@ class AgentState(TypedDict):
     search_query: str
     context: List[Document]
     answer: dict
+    blocked: bool
 
 
 # --- Retrieval ---
@@ -99,19 +102,20 @@ def search_documents(query_text, department_filter, k=RETRIEVAL_CANDIDATES):
 
 
 def format_sources(docs):
-    parts = []
-    for i, doc in enumerate(docs, 1):
+    """Retrieved chunks as delimited data (empty string when there are none)."""
+    if not docs:
+        return ""
+    entries = []
+    for doc in docs:
         m = doc.metadata
-        header = [
-            f"Documento: {m.get('filename', 'Desconocido')}",
-            f"Departamento: {CATEGORY_LABELS.get(m.get('category'), m.get('category', 'N/D'))}",
-        ]
-        if m.get("section"):
-            header.append(f"Sección: {m['section']}")
-        if m.get("page_no"):
-            header.append(f"Página: {m['page_no']}")
-        parts.append(f"[Fuente {i}] " + " | ".join(header) + f"\n{doc.page_content}")
-    return "\n\n".join(parts)
+        attrs = {
+            "documento": m.get("filename", "Desconocido"),
+            "departamento": CATEGORY_LABELS.get(m.get("category"), m.get("category", "N/D")),
+            "seccion": m.get("section"),
+            "pagina": m.get("page_no"),
+        }
+        entries.append((attrs, doc.page_content))
+    return prompt_safety.wrap_untrusted("fuentes", "fuente", entries)
 
 
 def build_references(docs, used_sources):
@@ -152,6 +156,18 @@ def build_references(docs, used_sources):
 
 
 # --- Nodes ---
+async def guard_question(state: AgentState):
+    """Stops attempts to manipulate the model before anything is searched or generated."""
+    reason = await prompt_safety.check_question(state["messages"][-1].content)
+    if reason is None:
+        return {"blocked": False}
+    log.warning(
+        "Prompt injection attempt blocked (department=%s, rule=%s)", state.get("user_department"), reason
+    )
+    answer = {"answer": prompt_safety.BLOCKED_MESSAGE, "tags": [], **build_references([], [])}
+    return {"blocked": True, "answer": answer, "messages": [rag.answer_message(prompt_safety.BLOCKED_MESSAGE)]}
+
+
 async def rewrite_query(state: AgentState):
     return {"search_query": await rag.rewrite_question(state["messages"])}
 
@@ -161,7 +177,7 @@ def retrieve_documents(state: AgentState):
     query = state.get("search_query") or state["messages"][-1].content
     filters = get_department_categories(state["user_department"], state.get("position", ""))
 
-    candidates = search_documents(query, filters)
+    candidates = prompt_safety.drop_injected(search_documents(query, filters))
     docs = rag.rerank(query, candidates, RETRIEVAL_K)
     log.info("Retrieved %d candidates, kept %d", len(candidates), len(docs))
     return {"context": docs}
@@ -169,9 +185,12 @@ def retrieve_documents(state: AgentState):
 
 async def generate_answer(state: AgentState):
     docs = state.get("context", [])
-    sources = format_sources(docs) or "(No se encontraron fragmentos relevantes.)"
-    messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\nFUENTES:\n{sources}"}]
-    messages += rag.to_openai_messages(rag.trim_history(state["messages"]))
+    sources = format_sources(docs) or "<fuentes>\n(No se encontraron fragmentos relevantes.)\n</fuentes>"
+    history = rag.to_openai_messages(rag.trim_history(state["messages"]))
+    # The retrieved text travels as data in its own message, right before the user's question
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages += history[:-1]
+    messages += [{"role": "user", "content": sources}, history[-1]]
 
     try:
         data = await llm.chat_json(messages, "document_answer", ANSWER_SCHEMA)
@@ -191,11 +210,13 @@ async def generate_answer(state: AgentState):
 # --- Graph Construction ---
 workflow = StateGraph(AgentState)
 
+workflow.add_node("guard", guard_question)
 workflow.add_node("rewrite", rewrite_query)
 workflow.add_node("retrieve", retrieve_documents)
 workflow.add_node("generate", generate_answer)
 
-workflow.set_entry_point("rewrite")
+workflow.set_entry_point("guard")
+workflow.add_conditional_edges("guard", lambda s: END if s.get("blocked") else "rewrite")
 workflow.add_edge("rewrite", "retrieve")
 workflow.add_edge("retrieve", "generate")
 workflow.add_edge("generate", END)

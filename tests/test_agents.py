@@ -87,7 +87,7 @@ class RagTest(LLMTestCase):
 
     def test_rerank_orders_dedupes_and_never_loses_candidates(self):
         docs = [doc(f"d{i}", filename=f"f{i}") for i in range(5)]
-        self.use_llm(FakeLLM(ranking=[3, 3, 99, 1]))
+        self.use_llm(FakeLLM(ranking=[4, 4, 100, 2]))  # the prompt numbers fragments from 1
         with mock.patch.object(rag, "RERANK_ENABLED", True):
             top = rag.rerank("q", docs, 3)
         self.assertEqual([d.page_content for d in top], ["d3", "d1", "d0"])
@@ -147,15 +147,20 @@ class DocumentAgentTest(LLMTestCase):
     def test_sources_with_metadata_reach_the_prompt(self):
         fake = self.use_llm(FakeLLM(answer={"answer": "x", "used_sources": [], "tags": []}))
         self.ask("q")
-        system = fake.json_calls[-1][1][0]["content"]
-        self.assertIn("[Fuente 1] Documento: Vacaciones.pdf | Departamento: Gestión Humana | Sección: Días | Página: 2", system)
-        self.assertIn("Se otorgan 14 días.", system)
+        messages = fake.json_calls[-1][1]
+        sources = messages[-2]["content"]  # its own message, before the question
+        self.assertIn(
+            '<fuente id="1" documento="Vacaciones.pdf" departamento="Gestión Humana" seccion="Días" pagina="2">', sources
+        )
+        self.assertIn("Se otorgan 14 días.", sources)
+        self.assertNotIn("Se otorgan 14 días.", messages[0]["content"])  # never in the system prompt
+        self.assertEqual(messages[-1], {"role": "user", "content": "q"})
 
     def test_no_context_is_flagged_in_the_prompt(self):
         self.search_mock.return_value = []
         fake = self.use_llm(FakeLLM(answer={"answer": "x", "used_sources": [], "tags": []}))
         self.ask("q")
-        self.assertIn("No se encontraron fragmentos relevantes", fake.json_calls[-1][1][0]["content"])
+        self.assertIn("No se encontraron fragmentos relevantes", fake.json_calls[-1][1][-2]["content"])
 
     def test_department_filter_comes_from_department_and_position(self):
         self.use_llm(FakeLLM(answer={"answer": "x", "used_sources": [], "tags": []}))
@@ -174,8 +179,9 @@ class DocumentAgentTest(LLMTestCase):
         self.assertEqual(self.search_mock.call_args.args[0], "vacaciones más de 5 años")
 
         sent = fake.json_calls[-1][1]
-        self.assertEqual([m["role"] for m in sent], ["system", "user", "assistant", "user"])
+        self.assertEqual([m["role"] for m in sent], ["system", "user", "assistant", "user", "user"])
         self.assertEqual(sent[2]["content"], "14 días")  # not the JSON envelope
+        self.assertTrue(sent[3]["content"].startswith("<fuentes>"))
 
     def test_llm_failure_returns_a_friendly_message_not_a_json_error(self):
         self.use_llm(FakeLLM(fail=True))
@@ -245,9 +251,9 @@ class AudioAgentTest(LLMTestCase):
     def test_call_header_carries_metrics_to_the_prompt(self):
         fake = self.use_llm(FakeLLM(answer={"answer": "x", "used_sources": [], "action_items": [], "tags": []}))
         self.ask("q")
-        system = fake.json_calls[-1][1][0]["content"]
-        self.assertIn("Sentimiento: 4/10", system)
-        self.assertIn("Tramo: 00:00-01:00", system)
+        calls = fake.json_calls[-1][1][-2]["content"]
+        self.assertIn('sentimiento="4/10"', calls)
+        self.assertIn('tramo="00:00-01:00"', calls)
 
     def test_failure_returns_friendly_answer_with_ui_keys(self):
         self.use_llm(FakeLLM(fail=True))
