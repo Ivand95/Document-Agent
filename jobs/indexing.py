@@ -25,9 +25,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 INTERVAL_HOURS = float(os.getenv("INDEXING_INTERVAL_HOURS", "24"))
 
 
-def run_all(force=False):
-    """Runs docs then audio. One failing job doesn't stop the other."""
-    run_indexing(force=force)
+def run_all(force=False, target="both", audio_folder=None):
+    """Runs docs and/or audio. One failing job doesn't stop the other."""
+    run_indexing(target=target, force=force, audio_folder=audio_folder)
 
 
 def db_filepaths(table):
@@ -82,18 +82,31 @@ if __name__ == "__main__":
         action="store_true",
         help="compare SharePoint vs DB file counts (read-only) and exit",
     )
+    parser.add_argument(
+        "--target",
+        choices=("both", "docs", "audio"),
+        default="both",
+        help="what to index (default: both)",
+    )
+    parser.add_argument(
+        "--audio-folder",
+        help='audio folder in the library (e.g. "3CX Recordings/recordings/1031"); '
+        "default: OFFICE_365_CONVERSATION_FOLDER_PATH",
+    )
     args = parser.parse_args()
 
     if args.report:
         report()
     elif args.once or args.full:
         ensure_database()
-        run_all(force=args.full)
+        run_all(args.full, args.target, args.audio_folder)
     else:
         ensure_database()
         # Run at startup (state may be stale), then every INDEXING_INTERVAL_HOURS
-        run_all()
-        schedule.every(INTERVAL_HOURS).hours.do(run_all)
+        run_all(target=args.target, audio_folder=args.audio_folder)
+        schedule.every(INTERVAL_HOURS).hours.do(
+            run_all, target=args.target, audio_folder=args.audio_folder
+        )
         while True:
             schedule.run_pending()
             time.sleep(30)

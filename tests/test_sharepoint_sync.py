@@ -270,3 +270,12 @@ class DownloadTest(unittest.TestCase):
         s.run()
         self.assertEqual([p.name for p in s.updated_files], ["b.pdf"])
         self.assertEqual(s.download_failures, 1)
+
+    def test_graph_get_retries_on_timeout(self):
+        s = FakeSync({"root": []}, self.root)
+        ok = self.response(200)
+        with mock.patch(
+            "sharepoint_sync.requests.get",
+            side_effect=[requests.ReadTimeout(), requests.ConnectionError(), ok],
+        ), mock.patch("sharepoint_sync.time.sleep"):
+            self.assertIs(SharePointSyncBase._get(s, "https://graph/x"), ok)

@@ -160,7 +160,13 @@ class SharePointSyncBase:
     def _get(self, url):
         """GET with token refresh on 401 and backoff on throttling / 5xx."""
         for attempt in range(MAX_RETRIES):
-            resp = requests.get(url, headers=self.headers, timeout=60)
+            try:
+                resp = requests.get(url, headers=self.headers, timeout=60)
+            except TRANSIENT_ERRORS:
+                if attempt == MAX_RETRIES - 1:
+                    raise
+                time.sleep(2**attempt)
+                continue
             if resp.status_code == 401 and attempt == 0:
                 self.authenticate()
                 continue
