@@ -3,10 +3,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from urllib.parse import unquote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 
+import requests  # noqa: E402
 from sharepoint_sync import SharePointSyncBase, db_key, normalize_folder  # noqa: E402
 
 
@@ -229,3 +231,42 @@ class SharePointSyncTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DownloadTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    @staticmethod
+    def response(status, body=b"data"):
+        r = requests.Response()
+        r.status_code = status
+        r._content = body
+        r.raw = mock.Mock()
+        r.iter_content = lambda size: iter([body]) if status == 200 else iter([])
+        return r
+
+    def test_download_retries_on_503(self):
+        # Base class method, not the FakeSync override
+        s = FakeSync({"root": []}, self.root)
+        target = self.root / "a.pdf"
+        responses = [self.response(503), self.response(503), self.response(200)]
+        with mock.patch("sharepoint_sync.requests.get", side_effect=responses), mock.patch(
+            "sharepoint_sync.time.sleep"
+        ):
+            SharePointSyncBase.download_file(s, "https://x", target)
+        self.assertEqual(target.read_bytes(), b"data")
+
+    def test_failed_download_is_skipped_not_fatal(self):
+        class Failing(FakeSync):
+            def download_file(self, url, path):
+                if url.endswith("/1"):
+                    raise requests.HTTPError("503", response=DownloadTest.response(503))
+                super().download_file(url, path)
+
+        s = Failing({"root": [file_item("1", "a.pdf"), file_item("2", "b.pdf")]}, self.root)
+        s.run()
+        self.assertEqual([p.name for p in s.updated_files], ["b.pdf"])
+        self.assertEqual(s.download_failures, 1)

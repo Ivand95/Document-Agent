@@ -27,6 +27,7 @@ from config import (
     LLM_SERVICE,
     LLM_API_KEY,
     SUPABASE_AUDIO_TABLE,
+    INDEXING_PAUSE_SECONDS,
 )
 
 load_dotenv()
@@ -303,6 +304,7 @@ class KnowledgeBaseIndexer:
         for f in files:
             if await self.index_file(f):
                 indexed.append(f)
+            await asyncio.sleep(INDEXING_PAUSE_SECONDS)
         return indexed
 
 
@@ -334,7 +336,7 @@ async def scheduled_audio_indexing(force=False, limit=None, folder_path=None):
     return {
         "synced": len(updated_files),
         "indexed": len(indexed),
-        "failed": len(updated_files) - len(indexed),
+        "failed": len(updated_files) - len(indexed) + syncer.download_failures,
         "deleted": deleted,
     }
 

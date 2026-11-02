@@ -10,6 +10,11 @@ from urllib.parse import parse_qs, quote, urlparse
 GRAPH_URL = "https://graph.microsoft.com/v1.0"
 RETRY_STATUS = {429, 500, 502, 503, 504}
 MAX_RETRIES = 5
+TRANSIENT_ERRORS = (
+    requests.ConnectionError,
+    requests.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
 
 
 def data_dir() -> Path:
@@ -84,6 +89,7 @@ class SharePointSyncBase:
 
         self.updated_files = []  # downloaded this run, waiting for commit
         self.removed = []  # [{"item_id": str | None, "path": str}]
+        self.download_failures = 0  # files skipped this run; retried on the next one
         self._pending = {}  # str(local_path) -> (item_id, remote_mod)
         self._seen = set()
         self.sync_state = self._load_state()
@@ -237,11 +243,23 @@ class SharePointSyncBase:
         path.parent.mkdir(parents=True, exist_ok=True)
         print(f"Downloading: {path}")
         partial = path.with_name(path.name + ".part")
-        with requests.get(url, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(partial, "wb") as f:
-                for chunk in r.iter_content(8192):
-                    f.write(chunk)
+        for attempt in range(MAX_RETRIES):
+            last = attempt == MAX_RETRIES - 1
+            try:
+                with requests.get(url, stream=True, timeout=60) as r:
+                    if r.status_code in RETRY_STATUS and not last:
+                        time.sleep(int(r.headers.get("Retry-After", 2**attempt)))
+                        continue
+                    r.raise_for_status()
+                    with open(partial, "wb") as f:
+                        for chunk in r.iter_content(8192):
+                            f.write(chunk)
+            except TRANSIENT_ERRORS:
+                if last:
+                    raise
+                time.sleep(2**attempt)
+                continue
+            break
         partial.replace(path)
 
     def _needs_sync(self, item, local_path):
@@ -275,7 +293,15 @@ class SharePointSyncBase:
                 needs_sync = self._needs_sync(item, local_path)
 
             if needs_sync:
-                self.download_file(item["@microsoft.graph.downloadUrl"], local_path)
+                try:
+                    self.download_file(item["@microsoft.graph.downloadUrl"], local_path)
+                except (requests.RequestException, OSError) as e:
+                    # One bad file must not abort the run; it isn't in the state, so it is retried next time.
+                    # The message omits the exception text: it contains the pre-authenticated download URL.
+                    status = getattr(getattr(e, "response", None), "status_code", None)
+                    print(f"Download failed for {local_path} ({type(e).__name__} {status or ''}); skipping.")
+                    self.download_failures += 1
+                    continue
                 self._pending[str(local_path)] = (item_id, item["lastModifiedDateTime"])
                 self.updated_files.append(local_path)
                 if self.limit and len(self.updated_files) >= self.limit:

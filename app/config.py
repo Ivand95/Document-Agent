@@ -27,6 +27,7 @@ RETRIEVAL_MATCH_THRESHOLD = float(os.getenv("RETRIEVAL_MATCH_THRESHOLD", "0.4"))
 AUDIO_MATCH_THRESHOLD = float(os.getenv("AUDIO_MATCH_THRESHOLD", "0.2"))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 HISTORY_MAX_MESSAGES = int(os.getenv("HISTORY_MAX_MESSAGES", "8"))  # messages sent to the LLM
+INDEXING_PAUSE_SECONDS = float(os.getenv("INDEXING_PAUSE_SECONDS", "1"))  # idle time between files, so the DB keeps serving searches
 
 DEPARTMENT_LIST = {
     "Gestion Humana": "HR",

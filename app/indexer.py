@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -18,6 +19,7 @@ from config import (
     SUPABASE_KEY,
     SUPABASE_URL,
     SUPABASE_TABLE,
+    INDEXING_PAUSE_SECONDS,
 )
 
 load_dotenv()
@@ -220,7 +222,12 @@ class KnowledgeBaseIndexer:
                 for f in self.root_dir.rglob("*")
                 if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
             ]
-        return [f for f in files if self.index_file(f)]
+        indexed = []
+        for f in files:
+            if self.index_file(f):
+                indexed.append(f)
+            time.sleep(INDEXING_PAUSE_SECONDS)
+        return indexed
 
 
 # --- Scheduled Indexing Execution Flow ---
@@ -251,7 +258,7 @@ def scheduled_indexing(force=False, limit=None, folder_path=None):
     return {
         "synced": len(updated_files),
         "indexed": len(indexed),
-        "failed": len(updated_files) - len(indexed),
+        "failed": len(updated_files) - len(indexed) + syncer.download_failures,
         "deleted": deleted,
     }
 
