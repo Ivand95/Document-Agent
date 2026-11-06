@@ -87,6 +87,10 @@ class SharePointSyncBase:
         self.scopes = ["https://graph.microsoft.com/.default"]
         self.headers = None
 
+        # Optional predicate on top-level folder names under the root (the admin panel's selection).
+        # None = every folder; files directly in the root are skipped when it is set
+        self.folder_filter = None
+
         self.updated_files = []  # downloaded this run, waiting for commit
         self.removed = []  # [{"item_id": str | None, "path": str}]
         self.download_failures = 0  # files skipped this run; retried on the next one
@@ -221,9 +225,32 @@ class SharePointSyncBase:
 
     def walk_root(self, site_id, drive_id):
         folder_id, local_path = self.resolve_root(site_id, drive_id)
-        return self.walk(site_id, drive_id, folder_id, local_path)
+        return self.walk(site_id, drive_id, folder_id, local_path, top_level=True)
 
-    def walk(self, site_id, drive_id, folder_id="root", current_path=None):
+    def list_subfolders(self):
+        """Names of the folders directly under the root folder."""
+        self.authenticate()
+        site_id, drive_id = self.get_site_and_drive()
+        folder_id, _ = self.resolve_root(site_id, drive_id)
+        names = []
+        url = f"{GRAPH_URL}/sites/{site_id}/drives/{drive_id}/items/{folder_id}/children"
+        while url:
+            data = self._get(url).json()
+            names += [i["name"] for i in data.get("value", []) if "folder" in i]
+            url = data.get("@odata.nextLink")
+        return sorted(names)
+
+    def is_excluded(self, path) -> bool:
+        """True for a local path inside a root subfolder the selection leaves out."""
+        if not self.folder_filter or not path:
+            return False
+        try:
+            parts = Path(path).relative_to(self.download_dir / self.root_folder).parts
+        except ValueError:
+            return False
+        return len(parts) < 2 or not self.folder_filter(parts[0])
+
+    def walk(self, site_id, drive_id, folder_id="root", current_path=None, top_level=False):
         """Yields (item, local_path) for every valid file under the folder."""
         if current_path is None:
             current_path = self.download_dir
@@ -233,9 +260,12 @@ class SharePointSyncBase:
             data = self._get(url).json()
             for item in data.get("value", []):
                 local_path = current_path / item["name"]
+                selection = top_level and self.folder_filter
                 if "folder" in item:
+                    if selection and not self.folder_filter(item["name"]):
+                        continue
                     yield from self.walk(site_id, drive_id, item["id"], local_path)
-                elif "file" in item and self.is_valid_file(item["name"]):
+                elif "file" in item and not selection and self.is_valid_file(item["name"]):
                     yield item, local_path
             url = data.get("@odata.nextLink")
 
@@ -333,6 +363,8 @@ class SharePointSyncBase:
             for i, entry in self.sync_state.items()
             if i not in self._seen
             and (not self.root_folder or not entry["path"] or Path(entry["path"]).is_relative_to(root))
+            # Unselected folders were never listed: their calls stay indexed instead of being deleted
+            and not self.is_excluded(entry["path"])
         ]
         if missing and not self._seen:
             print("Remote listing is empty; skipping deletion detection.")

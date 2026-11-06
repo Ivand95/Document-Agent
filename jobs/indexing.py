@@ -8,65 +8,37 @@ from pathlib import Path
 # app/ modules use flat imports (`from config import ...`), so put app/ on the path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 
-import schedule  # noqa: E402
-from audio_ingestion import SharePointSync as AudioSync  # noqa: E402
-from config import (  # noqa: E402
-    SUPABASE_AUDIO_TABLE,
-    SUPABASE_SCHEMA,
-    SUPABASE_TABLE,
-    global_supabase_client,
-)
 from db_setup import ensure_database  # noqa: E402
-from indexer import SharePointSync as DocsSync  # noqa: E402
+import ingestion_config  # noqa: E402
+from indexing_window import IndexingWindow  # noqa: E402
+from ingestion_control import IngestionController  # noqa: E402
 from indexing_runner import run_indexing  # noqa: E402
-from sharepoint_sync import data_dir  # noqa: E402
+from ingestion_report import compute_report  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-INTERVAL_HOURS = float(os.getenv("INDEXING_INTERVAL_HOURS", "24"))
+CHECK_SECONDS = 60  # how often the loop looks at the clock
 
 
-def run_all(force=False, target="both", audio_folder=None):
+def run_all(force=False, target="both", audio_folder=None, should_continue=None):
     """Runs docs and/or audio. One failing job doesn't stop the other."""
-    run_indexing(target=target, force=force, audio_folder=audio_folder)
-
-
-def db_filepaths(table):
-    """Distinct `metadata.filepath` values stored in a chunks table."""
-    paths, start, page = set(), 0, 1000
-    while True:
-        rows = (
-            global_supabase_client.schema(SUPABASE_SCHEMA)
-            .table(table)
-            .select("metadata->>filepath")
-            .range(start, start + page - 1)
-            .execute()
-            .data
-        )
-        paths.update(r["filepath"] for r in rows if r.get("filepath"))
-        if len(rows) < page:
-            return paths
-        start += page
+    return run_indexing(
+        target=target, force=force, audio_folder=audio_folder, should_continue=should_continue
+    )
 
 
 def report():
     """Read-only: compares files in SharePoint against files that have chunks in the DB."""
-    targets = (
-        ("docs", DocsSync(data_dir() / "downloads"), SUPABASE_TABLE),
-        ("audio", AudioSync(data_dir() / "downloads_audio"), SUPABASE_AUDIO_TABLE),
-    )
-    for name, syncer, table in targets:
-        remote = syncer.list_remote_paths()
-        stored = db_filepaths(table)
-        missing, orphans = sorted(remote - stored), sorted(stored - remote)
+    data = compute_report()
+    for name in ("docs", "audio"):
+        info = data[name]
         print(
-            f"\n[{name}] SharePoint: {len(remote)} files | DB ({table}): {len(stored)} files"
-            f" | missing in DB: {len(missing)} | orphans in DB: {len(orphans)}"
+            f"\n[{name}] SharePoint: {info['remote']} files | indexed: {info['indexed']}"
+            f" | pending: {info['pending']} | orphans in DB: {info['orphans']}"
         )
-        for label, items in (("missing", missing), ("orphan", orphans)):
-            for path in items[:20]:
-                print(f"  {label}: {path}")
-            if len(items) > 20:
-                print(f"  ... and {len(items) - 20} more {label}")
+        for path in info["pending_files"][:20]:
+            print(f"  pending: {path}")
+        if info["pending"] > 20:
+            print(f"  ... and {info['pending'] - 20} more pending")
 
 
 if __name__ == "__main__":
@@ -102,11 +74,20 @@ if __name__ == "__main__":
         run_all(args.full, args.target, args.audio_folder)
     else:
         ensure_database()
-        # Run at startup (state may be stale), then every INDEXING_INTERVAL_HOURS
-        run_all(target=args.target, audio_folder=args.audio_folder)
-        schedule.every(INTERVAL_HOURS).hours.do(
-            run_all, target=args.target, audio_folder=args.audio_folder
+        # Scheduled runs only happen inside the nightly window (INDEXING_WINDOW_START/END, INDEXING_TZ)
+        window = IndexingWindow.from_env()
+        logging.info(
+            "Indexing window %s-%s %s", window.start, window.end, window.tz
+        )
+        controller = IngestionController(
+            lambda should_continue: run_all(
+                target=args.target, audio_folder=args.audio_folder, should_continue=should_continue
+            ),
+            compute_report,
+            ingestion_config,
+            window,
+            report_minutes=float(os.getenv("INGESTION_REPORT_MINUTES", "120")),
         )
         while True:
-            schedule.run_pending()
-            time.sleep(30)
+            controller.tick()
+            time.sleep(CHECK_SECONDS)

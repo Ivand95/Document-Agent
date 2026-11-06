@@ -22,7 +22,8 @@ class RenderTest(unittest.TestCase):
         for path in db_setup.migration_files():
             sql = db_setup.render(path.read_text(), "extensions")
             self.assertNotIn("@@", sql, path.name)
-        self.assertIn("extensions.vector(1536)", sql)
+            if path.name.startswith("0001_"):
+                self.assertIn("extensions.vector(1536)", sql)
 
     def test_unsafe_identifiers_are_rejected(self):
         for bad in ('docs"; drop table x; --', "Docs", "1abc", "a" * 64, ""):
@@ -171,7 +172,7 @@ class PostgresIntegrationTest(unittest.TestCase):
 
     def test_fresh_database_gets_tables_functions_and_working_search(self):
         applied = db_setup.apply_migrations(self.dsn)
-        self.assertEqual(applied, ["0001_vector_search", "0002_deny_by_default"])
+        self.assertEqual(applied, ["0001_vector_search", "0002_deny_by_default", "0003_ingestion_admin"])
 
         with self.connect() as c:
             self.fill(c)
@@ -308,12 +309,12 @@ class PostgresIntegrationTest(unittest.TestCase):
         self.use_schema("public")
         with self.connect() as c:  # another app already owns a table and a migrations-like table in public
             c.execute("create table public.schema_migrations (version text)")
-        self.assertEqual(db_setup.apply_migrations(self.dsn), ["0001_vector_search", "0002_deny_by_default"])
+        self.assertEqual(db_setup.apply_migrations(self.dsn), ["0001_vector_search", "0002_deny_by_default", "0003_ingestion_admin"])
         with self.connect() as c:
             self.fill(c)
             self.assertEqual([h[0] for h in self.search(c, 0, categories=["HR"])], ["vacaciones"])
             tracked = c.execute(f"select version from public.{db_setup.TRACKING_TABLE}").fetchall()
-            self.assertEqual(tracked, [("0001_vector_search",), ("0002_deny_by_default",)])
+            self.assertEqual(tracked, [("0001_vector_search",), ("0002_deny_by_default",), ("0003_ingestion_admin",)])
             c.execute("set role service_role")
             self.assertEqual(len(self.search(c, 0)), 2)
 

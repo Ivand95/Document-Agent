@@ -1,18 +1,19 @@
-import {
-  ArrowDownward,
-  AutoAwesome,
-  Check,
-  Description,
-  GraphicEq,
-  KeyboardArrowDown,
-  Logout,
-  Send,
-} from "@mui/icons-material";
+import ArrowDownward from "@mui/icons-material/ArrowDownward";
+import AutoAwesome from "@mui/icons-material/AutoAwesome";
+import Check from "@mui/icons-material/Check";
+import Description from "@mui/icons-material/Description";
+import GraphicEq from "@mui/icons-material/GraphicEq";
+import KeyboardArrowDown from "@mui/icons-material/KeyboardArrowDown";
+import Logout from "@mui/icons-material/Logout";
+import Settings from "@mui/icons-material/Settings";
+import Send from "@mui/icons-material/Send";
 import { Avatar, Button, CircularProgress, IconButton } from "@mui/material";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { useNavigate } from "react-router";
 import remarkGfm from "remark-gfm";
+import { ThemeToggle } from "../components/ThemeToggle";
+import { isAdminDepartment } from "../utils/admin";
 import {
   audioAgentWebSocket,
   documentAgentWebSocket,
@@ -105,9 +106,11 @@ const AGENTS: AgentDef[] = [
 const UserMenu = ({
   userInfo,
   onLogout,
+  onOpenAdmin,
 }: {
   userInfo: UserInfo;
   onLogout: () => void;
+  onOpenAdmin: () => void;
 }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -162,6 +165,24 @@ const UserMenu = ({
             </div>
           </div>
           <div className="chat-header-user-info-footer">
+            {isAdminDepartment(userInfo.department) && (
+              <Button
+                onClick={onOpenAdmin}
+                size="small"
+                aria-label="Abrir configuración de ingesta"
+                variant="text"
+                fullWidth
+                sx={{
+                  justifyContent: "flex-start",
+                  gap: 1,
+                  color: "var(--chat-text-muted)",
+                  "&:hover": { bgcolor: "var(--chat-hover)", color: "var(--chat-text)" },
+                }}
+                startIcon={<Settings sx={{ fontSize: 18 }} />}
+              >
+                Configuración
+              </Button>
+            )}
             <Button
               onClick={onLogout}
               size="small"
@@ -173,7 +194,7 @@ const UserMenu = ({
                 gap: 1,
                 color: "var(--chat-text-muted)",
                 "&:hover": {
-                  bgcolor: "rgba(255,255,255,0.06)",
+                  bgcolor: "var(--chat-hover)",
                   color: "var(--chat-text)",
                 },
               }}
@@ -655,7 +676,14 @@ export const Chat = (props: {
             <p className="chat-subtitle">{currentAgent.subtitle}</p>
           </div>
         </div>
-        <UserMenu userInfo={props.userInfo} onLogout={handleLogout} />
+        <div className="chat-header-actions">
+          <ThemeToggle />
+          <UserMenu
+            userInfo={props.userInfo}
+            onLogout={handleLogout}
+            onOpenAdmin={() => navigate("/admin")}
+          />
+        </div>
       </header>
 
       <main className="chat-main">

@@ -1,8 +1,12 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
-import { AutoAwesome, Microsoft, Visibility, VisibilityOff } from '@mui/icons-material'
+import AutoAwesome from '@mui/icons-material/AutoAwesome'
+import Microsoft from '@mui/icons-material/Microsoft'
+import Visibility from '@mui/icons-material/Visibility'
+import VisibilityOff from '@mui/icons-material/VisibilityOff'
 import { Button, CircularProgress, IconButton, InputAdornment, TextField } from '@mui/material'
 import { login } from '../utils/axios'
+import { ThemeToggle } from '../components/ThemeToggle'
 import './style.css'
 
 export const Login = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserInfo) => void }) => {
@@ -92,6 +96,7 @@ export const Login = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserI
     return (
         <div className="login-page">
             <div className="login-bg" aria-hidden />
+            <ThemeToggle className="login-theme-toggle" />
             <div className="login-card">
                 <div className="login-brand">
                     <div className="login-brand-icon">

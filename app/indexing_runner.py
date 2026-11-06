@@ -23,19 +23,25 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def run_indexing(target="both", force=False, limit=None, docs_folder=None, audio_folder=None):
+def run_indexing(
+    target="both", force=False, limit=None, docs_folder=None, audio_folder=None, should_continue=None
+):
     """Runs docs and/or audio indexing synchronously. One failing target doesn't stop the other."""
     # Imported lazily: both modules load Docling and create clients at import time
     from audio_ingestion import scheduled_audio_indexing
     from indexer import scheduled_indexing
 
     jobs = {
-        "docs": lambda: scheduled_indexing(force, limit, docs_folder),
-        "audio": lambda: asyncio.run(scheduled_audio_indexing(force, limit, audio_folder)),
+        "docs": lambda: scheduled_indexing(force, limit, docs_folder, should_continue),
+        "audio": lambda: asyncio.run(scheduled_audio_indexing(force, limit, audio_folder, should_continue)),
     }
     results = {}
     for name, job in jobs.items():
         if target not in (name, "both"):
+            continue
+        if should_continue and not should_continue():
+            log.info("Indexing window closed; skipping job '%s'", name)
+            results[name] = {"deferred": "window closed"}
             continue
         started = time.time()
         log.info("Indexing job '%s' started", name)

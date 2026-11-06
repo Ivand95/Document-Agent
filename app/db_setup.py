@@ -82,12 +82,15 @@ def apply_grants(conn, names):
     from psycopg import sql
 
     schema, docs, audio = names["schema"], names["docs_table"], names["audio_table"]
-    tables = sql.SQL(", ").join(sql.Identifier(schema, t) for t in (docs, audio))
+    tables = sql.SQL(", ").join(
+        sql.Identifier(schema, t) for t in (docs, audio, "ingestion_folders", "ingestion_state")
+    )
     functions = [
         sql.SQL("{}.match_documents(vector, double precision, integer, text[])").format(sql.Identifier(schema)),
         sql.SQL("{}.match_conversations(vector, double precision, integer, text, text, text)").format(
             sql.Identifier(schema)
         ),
+        sql.SQL("{}.set_audio_department(text, text)").format(sql.Identifier(schema)),
     ]
     # `vector` must resolve in the search path used for the grant statements
     conn.execute(sql.SQL("set local search_path = {}, {}, public").format(

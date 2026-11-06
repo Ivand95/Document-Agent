@@ -1,14 +1,18 @@
 import './App.css'
-import { RouterProvider, createBrowserRouter } from 'react-router'
-import { Chat } from './chat/chat'
-import { Login } from './login/login'
+import { BrowserRouter, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './routes/ProtectedRoute'
 import { PublicRoute } from './routes/PublicRoute'
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { encrypt, decrypt } from './utils/crypto'
 import { isAxiosError } from 'axios'
 import { refreshSession } from './utils/axios'
 import { tokenExpiry } from './utils/token'
+
+// Each screen is its own chunk: login doesn't download the chat (markdown renderer, icons) and vice versa
+const Login = lazy(() => import('./login/login').then((m) => ({ default: m.Login })))
+const Chat = lazy(() => import('./chat/chat').then((m) => ({ default: m.Chat })))
+
+const Admin = lazy(() => import('./admin/admin').then((m) => ({ default: m.Admin })))
 
 const STORAGE_KEY = 'document-agent-user'
 const EMPTY_USER: UserInfo = { access_token: '', name: '', email: '', department: '' }
@@ -63,26 +67,39 @@ function App() {
     }
   }, [userInfo])
 
-  const router = createBrowserRouter([
-    {
-      path: '/',
-      element: (
-        <PublicRoute isLoggedIn={!!userInfo.access_token}>
-          <Login userInfo={userInfo} setUserInfo={setUserInfo} />
-        </PublicRoute>
-      ),
-    },
-    {
-      path: '/chat',
-      element: (
-        <ProtectedRoute isLoggedIn={!!userInfo.access_token}>
-          <Chat userInfo={userInfo} setUserInfo={setUserInfo} />
-        </ProtectedRoute>
-      ),
-    },
-  ])
-
-  return <RouterProvider router={router} />
+  // Declarative routes keep the screens mounted when userInfo changes (e.g. a token renewal)
+  return (
+    <BrowserRouter>
+      <Suspense fallback={null}>
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <PublicRoute isLoggedIn={!!userInfo.access_token}>
+                <Login userInfo={userInfo} setUserInfo={setUserInfo} />
+              </PublicRoute>
+            }
+          />
+          <Route
+            path="/chat"
+            element={
+              <ProtectedRoute isLoggedIn={!!userInfo.access_token}>
+                <Chat userInfo={userInfo} setUserInfo={setUserInfo} />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute isLoggedIn={!!userInfo.access_token}>
+                <Admin userInfo={userInfo} />
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+      </Suspense>
+    </BrowserRouter>
+  )
 }
 
 export default App

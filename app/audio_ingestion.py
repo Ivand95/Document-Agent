@@ -17,6 +17,7 @@ from docling.pipeline.asr_pipeline import AsrPipeline
 import openai
 import google.generativeai as genai
 
+from ingestion_config import folder_filter, load_folders
 from sharepoint_sync import SharePointSyncBase, data_dir, db_key
 from config import (
     LIGHT_MODEL,
@@ -94,7 +95,11 @@ def asr_spec(name):
 
 
 class KnowledgeBaseIndexer:
-    def __init__(self, root_dir):
+    def __init__(self, root_dir, folder_config=None, root_parts=0):
+        # folder_config: {folder: {"enabled", "department"}} from the admin panel.
+        # root_parts: how many path segments the SharePoint root folder takes ("3CX Recordings/recordings" = 2)
+        self.folder_config = folder_config or {}
+        self.root_parts = root_parts
         # Configure ASR pipeline (smaller Whisper models are faster on CPU, with less accuracy)
         pipeline_options = AsrPipelineOptions(
             asr_options=asr_spec(ASR_MODEL), language="es"
@@ -131,6 +136,25 @@ class KnowledgeBaseIndexer:
             )
         except ValueError:
             return "External"
+
+    def get_audio_folder(self, file_path):
+        """Name of the extension folder directly under the SharePoint root, or None."""
+        try:
+            parts = file_path.relative_to(self.root_dir).parts
+        except ValueError:
+            return None
+        return parts[self.root_parts] if len(parts) > self.root_parts + 1 else None
+
+    def folder_metadata(self, file_path):
+        """`audio_folder` and the department the panel assigned to it (omitted when unknown)."""
+        folder = self.get_audio_folder(file_path)
+        if folder is None:
+            return {}
+        meta = {"audio_folder": folder}
+        department = self.folder_config.get(folder, {}).get("department")
+        if department:
+            meta["department"] = department
+        return meta
 
     def extract_metadata_from_name(self, filename):
         match = self.audio_pattern.match(filename)
@@ -267,6 +291,7 @@ class KnowledgeBaseIndexer:
                 "filepath": db_key(file_path),
                 "filename": file_path.name,
                 "category": self.get_category_from_path(file_path),
+                **self.folder_metadata(file_path),
                 **self.extract_metadata_from_name(file_path.name),
                 **analysis,
             }
@@ -303,8 +328,11 @@ class KnowledgeBaseIndexer:
             print(f"Failed to process {file_path.name}: {e}")
             return False
 
-    async def run_indexer(self, files_to_process=None):
-        """Indexes the given files (or every local call). Returns the successfully indexed paths."""
+    async def run_indexer(self, files_to_process=None, should_continue=None):
+        """Indexes the given files (or every local call). Returns the successfully indexed paths.
+
+        `should_continue` is checked before each file; when it returns False the rest is deferred."""
+        self.deferred = 0
         if files_to_process:
             files = files_to_process
         else:
@@ -314,7 +342,11 @@ class KnowledgeBaseIndexer:
                 if f.is_file() and self.audio_pattern.match(f.name)
             ]
         indexed = []
-        for f in files:
+        for n, f in enumerate(files):
+            if should_continue and not should_continue():
+                self.deferred = len(files) - n
+                print(f"Indexing window closed; {self.deferred} calls deferred to the next run.")
+                break
             if await self.index_file(f):
                 indexed.append(f)
             await asyncio.sleep(INDEXING_PAUSE_SECONDS)
@@ -322,7 +354,7 @@ class KnowledgeBaseIndexer:
 
 
 # --- Scheduled Indexing Execution Flow ---
-async def scheduled_audio_indexing(force=False, limit=None, folder_path=None):
+async def scheduled_audio_indexing(force=False, limit=None, folder_path=None, should_continue=None):
     """Syncs SharePoint, indexes new/modified calls and drops removed ones. Returns a summary."""
     DOWNLOAD_DIR = data_dir() / "downloads_audio"
 
@@ -330,12 +362,17 @@ async def scheduled_audio_indexing(force=False, limit=None, folder_path=None):
     syncer = SharePointSync(
         DOWNLOAD_DIR, force=force, limit=limit, folder_path=folder_path
     )
+    # Only the folders the admin panel selected (everything until it is configured)
+    folders = load_folders()
+    syncer.folder_filter = folder_filter(folders)
     updated_files = syncer.run()
 
     # 2. Run Indexer
-    indexer = KnowledgeBaseIndexer(DOWNLOAD_DIR)
+    indexer = KnowledgeBaseIndexer(
+        DOWNLOAD_DIR, folder_config=folders, root_parts=len(Path(syncer.root_folder).parts)
+    )
 
-    indexed = await indexer.run_indexer(updated_files) if updated_files else []
+    indexed = await indexer.run_indexer(updated_files, should_continue) if updated_files else []
     if not updated_files:
         print("No new files from SharePoint.")
 
@@ -349,7 +386,8 @@ async def scheduled_audio_indexing(force=False, limit=None, folder_path=None):
     return {
         "synced": len(updated_files),
         "indexed": len(indexed),
-        "failed": len(updated_files) - len(indexed) + syncer.download_failures,
+        "failed": len(updated_files) - len(indexed) - indexer.deferred + syncer.download_failures,
+        "deferred": indexer.deferred,
         "deleted": deleted,
     }
 

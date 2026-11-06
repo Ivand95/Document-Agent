@@ -3,9 +3,13 @@
   line-height: 1.5;
   font-weight: 400;
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #1e1f20;
+  --app-bg: #1e1f20;
+  --app-text: rgba(255, 255, 255, 0.87);
+  --app-button-bg: #1a1a1a;
+
+  color-scheme: dark;
+  color: var(--app-text);
+  background-color: var(--app-bg);
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -33,7 +37,7 @@ button {
   font-size: 1em;
   font-weight: 500;
   font-family: inherit;
-  background-color: #1a1a1a;
+  background-color: var(--app-button-bg);
   cursor: pointer;
   transition: border-color 0.25s;
 }
@@ -45,15 +49,54 @@ button:focus-visible {
   outline: 4px auto -webkit-focus-ring-color;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+:root[data-theme='light'] {
+  --app-bg: #f3f5f1;
+  --app-text: #16231d;
+  --app-button-bg: #f9f9f9;
+
+  color-scheme: light;
 }
+
+:root[data-theme='light'] a:hover {
+  color: #747bff;
+}
+
+/* ---- Chat / admin palette (shared: the admin panel is a separate chunk) ---- */
+.chat-dashboard,
+.admin-page {
+  --chat-bg: #1e1f20;
+  --chat-surface: #183028;
+  --chat-surface-elevated: #2c2d30;
+  --chat-border: rgba(255, 255, 255, 0.08);
+  --chat-text: #ffffff;
+  --chat-text-muted: rgba(255, 255, 255, 0.55);
+  --chat-accent: #5f7c3a;
+  --chat-accent-hover: #183028;
+  --chat-user-bubble: #183028;
+  --chat-agent-bubble: #40434b;
+  --chat-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+  --chat-menu-shadow: 0 12px 28px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.25);
+  --chat-hover: rgba(255, 255, 255, 0.06);
+  --chat-scrollbar: rgba(255, 255, 255, 0.12);
+  --chat-scrollbar-hover: rgba(255, 255, 255, 0.22);
+  --chat-radius: 10px;
+  --chat-radius-sm: 8px;
+  --chat-font: "DM Sans", system-ui, -apple-system, sans-serif;
+}
+
+:root[data-theme='light'] .chat-dashboard,
+:root[data-theme='light'] .admin-page {
+  --chat-bg: #f3f5f1;
+  --chat-surface: #e4ece0;
+  --chat-surface-elevated: #ffffff;
+  --chat-border: rgba(24, 48, 40, 0.14);
+  --chat-text: #16231d;
+  --chat-text-muted: rgba(22, 35, 29, 0.62);
+  --chat-agent-bubble: #e8ebe6;
+  --chat-shadow: 0 4px 24px rgba(24, 48, 40, 0.12);
+  --chat-menu-shadow: 0 12px 28px rgba(24, 48, 40, 0.18), 0 2px 6px rgba(24, 48, 40, 0.1);
+  --chat-hover: rgba(24, 48, 40, 0.06);
+  --chat-scrollbar: rgba(24, 48, 40, 0.2);
+  --chat-scrollbar-hover: rgba(24, 48, 40, 0.35);
+}
+

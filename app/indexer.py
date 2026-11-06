@@ -208,8 +208,11 @@ class KnowledgeBaseIndexer:
             print(f"Failed to index {file_path.name}: {e}")
             return False
 
-    def run_indexer(self, files_to_process=None):
-        """Indexes the given files (or every local file). Returns the successfully indexed paths."""
+    def run_indexer(self, files_to_process=None, should_continue=None):
+        """Indexes the given files (or every local file). Returns the successfully indexed paths.
+
+        `should_continue` is checked before each file; when it returns False the rest is deferred."""
+        self.deferred = 0
         if files_to_process:
             print(
                 f"Indexing {len(files_to_process)} new/modified files to {self.db_schema}.{self.db_table}..."
@@ -223,7 +226,11 @@ class KnowledgeBaseIndexer:
                 if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
             ]
         indexed = []
-        for f in files:
+        for n, f in enumerate(files):
+            if should_continue and not should_continue():
+                self.deferred = len(files) - n
+                print(f"Indexing window closed; {self.deferred} files deferred to the next run.")
+                break
             if self.index_file(f):
                 indexed.append(f)
             time.sleep(INDEXING_PAUSE_SECONDS)
@@ -231,7 +238,7 @@ class KnowledgeBaseIndexer:
 
 
 # --- Scheduled Indexing Execution Flow ---
-def scheduled_indexing(force=False, limit=None, folder_path=None):
+def scheduled_indexing(force=False, limit=None, folder_path=None, should_continue=None):
     """Syncs SharePoint, indexes new/modified files and drops removed ones. Returns a summary."""
     DOWNLOAD_DIR = data_dir() / "downloads"
 
@@ -244,7 +251,7 @@ def scheduled_indexing(force=False, limit=None, folder_path=None):
     # 2. Run Indexer
     indexer = KnowledgeBaseIndexer(DOWNLOAD_DIR)
 
-    indexed = indexer.run_indexer(updated_files) if updated_files else []
+    indexed = indexer.run_indexer(updated_files, should_continue) if updated_files else []
     if not updated_files:
         print("No new files from SharePoint.")
 
@@ -258,7 +265,8 @@ def scheduled_indexing(force=False, limit=None, folder_path=None):
     return {
         "synced": len(updated_files),
         "indexed": len(indexed),
-        "failed": len(updated_files) - len(indexed) + syncer.download_failures,
+        "failed": len(updated_files) - len(indexed) - indexer.deferred + syncer.download_failures,
+        "deferred": indexer.deferred,
         "deleted": deleted,
     }
 
