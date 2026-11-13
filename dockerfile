@@ -18,6 +18,10 @@ COPY pyproject.toml uv.lock ./
 
 RUN uv sync --no-dev
 
+# Bake Docling models into image: no HF/modelscope downloads at every container start
+ENV DOCLING_ARTIFACTS_PATH=/opt/docling-models
+RUN uv run docling-tools models download layout tableformer rapidocr -o /opt/docling-models
+
 COPY app/ ./app/
 COPY jobs/ ./jobs/
 
