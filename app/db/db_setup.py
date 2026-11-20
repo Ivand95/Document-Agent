@@ -1,8 +1,8 @@
 """Creates (and checks) everything Supabase needs for the agent's searches.
 
-    uv run python app/db_setup.py --check       # what the app sees through the REST API
-    uv run python app/db_setup.py --apply       # create tables, indexes and functions
-    uv run python app/db_setup.py --print-sql   # the SQL, to paste in the Supabase SQL editor
+    PYTHONPATH=app uv run python -m db.db_setup --check       # what the app sees through the REST API
+    PYTHONPATH=app uv run python -m db.db_setup --apply       # create tables, indexes and functions
+    PYTHONPATH=app uv run python -m db.db_setup --print-sql   # the SQL, to paste in the Supabase SQL editor
 
 --apply needs SUPABASE_DB_URL, a Postgres connection string the container can reach: the db service of
 a self-hosted Supabase (user postgres), or Supavisor in session mode (port 5432), or the cloud session pooler.
@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 
-from config import (
+from core.config import (
     SUPABASE_AUDIO_TABLE,
     SUPABASE_SCHEMA,
     SUPABASE_TABLE,
@@ -246,7 +246,7 @@ def ensure_database():
     for problem in problems:
         log.error("Search not ready: %s", problem)
     if problems and not dsn:
-        log.error("Set SUPABASE_DB_URL to create it automatically, or run: uv run python app/db_setup.py --print-sql")
+        log.error("Set SUPABASE_DB_URL to create it automatically, or run: PYTHONPATH=app uv run python -m db.db_setup --print-sql")
     return problems
 
 

@@ -7,7 +7,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 
-import db_setup  # noqa: E402
+from db import db_setup  # noqa: E402
 
 DIM = db_setup.EMBEDDING_DIM
 

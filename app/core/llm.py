@@ -3,7 +3,7 @@ import json
 
 import openai
 
-from config import CHAT_MODEL, LIGHT_MODEL, LLM_API_KEY, LLM_SERVICE
+from core.config import CHAT_MODEL, LIGHT_MODEL, LLM_API_KEY, LLM_SERVICE
 
 _client = None
 

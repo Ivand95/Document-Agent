@@ -3,8 +3,8 @@ containers) share them: which call folders are ingested, their department, and t
 import logging
 from datetime import datetime, timezone
 
-from config import SUPABASE_SCHEMA, department_options, global_supabase_client
-from ingestion_control import (  # noqa: F401  (state keys, re-exported for the API)
+from core.config import SUPABASE_SCHEMA, department_options, global_supabase_client
+from ingestion.ingestion_control import (  # noqa: F401  (state keys, re-exported for the API)
     LAST_RUN,
     REPORT,
     REPORT_REQUEST,

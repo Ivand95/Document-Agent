@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 
-import audio_ingestion  # noqa: E402
-import config  # noqa: E402
-import indexer  # noqa: E402
+from ingestion import audio_ingestion  # noqa: E402
+from core import config  # noqa: E402
+from ingestion import indexer  # noqa: E402
 
 
 class AsrModelTest(unittest.TestCase):

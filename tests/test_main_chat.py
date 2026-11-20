@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 import main  # noqa: E402
+from api import chat  # noqa: E402
+from core import security  # noqa: E402
 
 
 class FakeGraph:
@@ -30,12 +32,12 @@ class MainChatTest(unittest.TestCase):
         self.client = TestClient(main.app)
         self.graph = FakeGraph()
         for name in ("get_app_graph", "get_app_audio_graph"):
-            patcher = mock.patch.object(main, name, return_value=self.graph)
+            patcher = mock.patch.object(chat, name, return_value=self.graph)
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def token(self, **claims):
-        return main.create_access_token({"department": "Tecnología", "position": "Analista", **claims})
+        return security.create_access_token({"department": "Tecnología", "position": "Analista", **claims})
 
     def test_startup_prepares_the_database(self):
         with mock.patch.object(main, "ensure_database") as ensure:
@@ -80,7 +82,7 @@ class MainChatTest(unittest.TestCase):
                 pass
 
     def test_audio_ws_rejects_token_without_position(self):
-        token = main.create_access_token({"department": "Auditoria"})
+        token = security.create_access_token({"department": "Auditoria"})
         with self.assertRaises(WebSocketDisconnect):
             with self.connect_audio(token):
                 pass

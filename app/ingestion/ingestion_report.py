@@ -2,14 +2,14 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import (
+from core.config import (
     SUPABASE_AUDIO_TABLE,
     SUPABASE_SCHEMA,
     SUPABASE_TABLE,
     global_supabase_client,
 )
-from ingestion_config import folder_filter, load_folders
-from sharepoint_sync import data_dir
+from ingestion.ingestion_config import folder_filter, load_folders
+from ingestion.sharepoint_sync import data_dir
 
 MAX_LISTED = 50  # pending files named in the report; the count is always complete
 
@@ -73,8 +73,8 @@ def audio_report(syncer, stored: set, folders: dict) -> dict:
 def compute_report() -> dict:
     """Runs the comparison for documents and call recordings. Slow: it lists SharePoint."""
     # Imported here: both modules load Docling and create clients at import time
-    from audio_ingestion import SharePointSync as AudioSync
-    from indexer import SharePointSync as DocsSync
+    from ingestion.audio_ingestion import SharePointSync as AudioSync
+    from ingestion.indexer import SharePointSync as DocsSync
 
     docs_syncer = DocsSync(data_dir() / "downloads")
     audio_syncer = AudioSync(data_dir() / "downloads_audio")

@@ -9,11 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-import ingestion_config  # noqa: E402
+from ingestion import ingestion_config  # noqa: E402
 import main  # noqa: E402
-from config import is_admin_department  # noqa: E402
-from indexing_window import IndexingWindow  # noqa: E402
-from ingestion_control import (  # noqa: E402
+from core import security  # noqa: E402
+from core.config import is_admin_department  # noqa: E402
+from ingestion.indexing_window import IndexingWindow  # noqa: E402
+from ingestion.ingestion_control import (  # noqa: E402
     LAST_RUN,
     REPORT,
     REPORT_REQUEST,
@@ -21,8 +22,8 @@ from ingestion_control import (  # noqa: E402
     RUN_STATUS,
     IngestionController,
 )
-from ingestion_report import compare  # noqa: E402
-from sharepoint_sync import SharePointSyncBase  # noqa: E402
+from ingestion.ingestion_report import compare  # noqa: E402
+from ingestion.sharepoint_sync import SharePointSyncBase  # noqa: E402
 
 TZ = ZoneInfo("America/Santo_Domingo")
 DAY = datetime(2026, 1, 10, 14, 0, tzinfo=TZ)  # window closed
@@ -172,7 +173,7 @@ class AdminEndpointsTest(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def headers(self, department):
-        token = main.create_access_token({"sub": "a@b.c", "department": department, "position": "x"})
+        token = security.create_access_token({"sub": "a@b.c", "department": department, "position": "x"})
         return {"Authorization": f"Bearer {token}"}
 
     def test_department_check_ignores_accents_and_case(self):

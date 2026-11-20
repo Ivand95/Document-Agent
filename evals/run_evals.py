@@ -69,7 +69,7 @@ def load_cases(path, ids=None):
 
 
 async def judge(question, reference, answer):
-    import llm
+    from core import llm
 
     schema = {
         "type": "object",
@@ -114,7 +114,7 @@ async def run_case(graph, case, use_judge):
 
 
 def snapshot_config():
-    import config
+    from core import config
 
     keys = ["CHAT_MODEL", "LIGHT_MODEL", "RETRIEVAL_K", "RETRIEVAL_CANDIDATES",
             "RETRIEVAL_MATCH_THRESHOLD", "RERANK_ENABLED", "HISTORY_MAX_MESSAGES"]
@@ -157,7 +157,7 @@ async def main():
     parser.add_argument("--compare", help="previous results file")
     args = parser.parse_args()
 
-    from agent import app_graph
+    from agents.documents.graph import app_graph
 
     cases = load_cases(args.cases, set(args.ids.split(",")) if args.ids else None)
     results = []

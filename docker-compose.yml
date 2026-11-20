@@ -12,7 +12,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1 # Ensure Python output is logged in real time
     command: >
-      /bin/sh -c "source .venv/bin/activate && uv run app/agent.py"
+      /bin/sh -c "uv run uvicorn main:app --app-dir app --host 0.0.0.0 --port 8000"
 
   indexer:
     build:

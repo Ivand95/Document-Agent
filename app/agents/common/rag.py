@@ -2,9 +2,8 @@ import logging
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-import llm
-import prompt_safety
-from config import HISTORY_MAX_MESSAGES, RERANK_ENABLED
+from core import llm, prompt_safety
+from core.config import HISTORY_MAX_MESSAGES, RERANK_ENABLED
 
 log = logging.getLogger("rag")
 

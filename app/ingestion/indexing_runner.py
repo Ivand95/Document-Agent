@@ -28,8 +28,8 @@ def run_indexing(
 ):
     """Runs docs and/or audio indexing synchronously. One failing target doesn't stop the other."""
     # Imported lazily: both modules load Docling and create clients at import time
-    from audio_ingestion import scheduled_audio_indexing
-    from indexer import scheduled_indexing
+    from ingestion.audio_ingestion import scheduled_audio_indexing
+    from ingestion.indexer import scheduled_indexing
 
     jobs = {
         "docs": lambda: scheduled_indexing(force, limit, docs_folder, should_continue),

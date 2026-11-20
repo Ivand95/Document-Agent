@@ -12,11 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # shares helpers with 
 from fastapi.testclient import TestClient  # noqa: E402
 from langchain_core.messages import HumanMessage  # noqa: E402
 
-import agent  # noqa: E402
-import auth  # noqa: E402
-import config  # noqa: E402
+from agents.documents import graph as agent  # noqa: E402
+from integrations import m365 as auth  # noqa: E402
+from core import config  # noqa: E402
 import main  # noqa: E402
-import security  # noqa: E402
+from api import chat  # noqa: E402
+from core import security  # noqa: E402
 from test_agents import FakeLLM, LLMTestCase, doc, run  # noqa: E402
 
 REAL_SEARCH = agent.search_documents  # the class below replaces it with a fake while its tests run
@@ -217,7 +218,7 @@ class EndpointAccessTest(unittest.TestCase):
                 return {"answer": {"answer": "ok"}}
 
         token = security.create_access_token({"sub": "a@b", "department": "Tecnología", "position": "Analista"})
-        with mock.patch.object(main, "get_app_graph", return_value=Graph()):
+        with mock.patch.object(chat, "get_app_graph", return_value=Graph()):
             r = self.client.post(
                 "/chat",
                 json={"message": "hola", "department": "Auditoria", "position": "GR - Director", "user_department": "X"},

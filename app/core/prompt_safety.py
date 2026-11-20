@@ -2,7 +2,7 @@ import logging
 import re
 import unicodedata
 
-import llm
+from core import llm
 
 log = logging.getLogger("prompt_safety")
 

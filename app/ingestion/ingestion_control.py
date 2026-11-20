@@ -5,7 +5,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from indexing_window import IndexingWindow, NightlyScheduler
+from ingestion.indexing_window import IndexingWindow, NightlyScheduler
 
 log = logging.getLogger("ingestion_control")
 

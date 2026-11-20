@@ -34,14 +34,14 @@ Si el fragmento no permite una buena pregunta (índices, tablas ilegibles, texto
 
 
 def department_for(category):
-    from config import DEPARTMENT_LIST
+    from core.config import DEPARTMENT_LIST
 
     return next((name for name, code in DEPARTMENT_LIST.items() if code == category), "General")
 
 
 async def main():
-    import llm
-    from config import SUPABASE_SCHEMA, SUPABASE_TABLE, global_supabase_client
+    from core import llm
+    from core.config import SUPABASE_SCHEMA, SUPABASE_TABLE, global_supabase_client
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--n", type=int, default=30)

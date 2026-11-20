@@ -11,11 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 from langchain_core.documents import Document  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
-import agent  # noqa: E402
-import audio_agent  # noqa: E402
-import config  # noqa: E402
-import llm  # noqa: E402
-import rag  # noqa: E402
+from agents.documents import graph as agent  # noqa: E402
+from agents.audio import graph as audio_agent  # noqa: E402
+from core import config  # noqa: E402
+from core import llm  # noqa: E402
+from agents.common import rag  # noqa: E402
 
 
 def doc(text, **meta):

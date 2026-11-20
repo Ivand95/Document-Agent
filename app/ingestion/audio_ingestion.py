@@ -17,9 +17,9 @@ from docling.pipeline.asr_pipeline import AsrPipeline
 import openai
 import google.generativeai as genai
 
-from ingestion_config import folder_filter, load_folders
-from sharepoint_sync import SharePointSyncBase, data_dir, db_key
-from config import (
+from ingestion.ingestion_config import folder_filter, load_folders
+from ingestion.sharepoint_sync import SharePointSyncBase, data_dir, db_key
+from core.config import (
     LIGHT_MODEL,
     global_supabase_client,
     global_embedding_service_instance,

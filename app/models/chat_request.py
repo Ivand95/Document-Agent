@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from security import MAX_MESSAGE_CHARS
+from core.security import MAX_MESSAGE_CHARS
 
 
 class ChatRequest(BaseModel):

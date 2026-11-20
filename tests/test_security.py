@@ -14,7 +14,8 @@ from jose import JWTError, jwt  # noqa: E402
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 import main  # noqa: E402
-import security  # noqa: E402
+from api import auth as api_auth, chat  # noqa: E402
+from core import security  # noqa: E402
 from models.user_profile import UserProfile  # noqa: E402
 
 FRONT = "https://front.example.com"
@@ -174,8 +175,8 @@ class LoginFlowTest(EnvTestCase):
     def test_callback_success_posts_only_to_the_opener_origin_and_state_is_single_use(self):
         state = self.start_login(origin="https://front.example.com")["state"][0]
         profile = UserProfile(id="1", name='Ana </script><b>', email="ana@coop.test", department="IT", position="Analista")
-        with mock.patch.object(main, "exchange_code_for_token", mock.AsyncMock(return_value={"access_token": "ms"})) as ex, \
-             mock.patch.object(main, "get_user_profile", mock.AsyncMock(return_value=profile)):
+        with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock(return_value={"access_token": "ms"})) as ex, \
+             mock.patch.object(api_auth, "get_user_profile", mock.AsyncMock(return_value=profile)):
             html = self.client.get(f"/auth/callback?code=abc&state={state}").text
             self.assertEqual(ex.call_args.args[0], "abc")
             self.assertTrue(ex.call_args.args[1])  # PKCE verifier
@@ -187,7 +188,7 @@ class LoginFlowTest(EnvTestCase):
 
     def test_callback_does_not_leak_exception_details(self):
         state = self.start_login()["state"][0]
-        with mock.patch.object(main, "exchange_code_for_token", mock.AsyncMock(side_effect=Exception("secret-detail"))):
+        with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock(side_effect=Exception("secret-detail"))):
             html = self.client.get(f"/auth/callback?code=abc&state={state}").text
         self.assertNotIn("secret-detail", html)
         self.assertLoginFailed(html)
@@ -234,7 +235,7 @@ class WebSocketSecurityTest(EnvTestCase):
         self.unset("FRONTEND_URL")
         self.client = TestClient(main.app)
         self.graph = FakeGraph()
-        patcher = mock.patch.object(main, "get_app_graph", return_value=self.graph)
+        patcher = mock.patch.object(chat, "get_app_graph", return_value=self.graph)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.claims = {"sub": "a@b", "department": "IT", "position": "Analista"}
@@ -259,7 +260,7 @@ class WebSocketSecurityTest(EnvTestCase):
         with self.connect(security.create_access_token(self.claims)) as ws:
             ws.send_json({"message": "a" * (security.MAX_MESSAGE_CHARS + 1)})
             self.assertEqual(ws.receive_json()["type"], "error")
-            ws.send_text("b" * (main.MAX_FRAME_CHARS + 1))
+            ws.send_text("b" * (chat.MAX_FRAME_CHARS + 1))
             self.assertEqual(ws.receive_json()["type"], "error")
         self.assertEqual(self.graph.calls, [])
 

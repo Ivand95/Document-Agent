@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 from jose import JWTError, jwt
 
-from indexing_runner import NON_PROD_ENVS
+from ingestion.indexing_runner import NON_PROD_ENVS
 
 log = logging.getLogger("security")
 

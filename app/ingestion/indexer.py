@@ -12,8 +12,8 @@ from docling.chunking import HybridChunker  # specific docling chunker
 from docling_core.transforms.chunker.tokenizer.openai import OpenAITokenizer
 import tiktoken
 
-from sharepoint_sync import SharePointSyncBase, data_dir, db_key
-from config import (
+from ingestion.sharepoint_sync import SharePointSyncBase, data_dir, db_key
+from core.config import (
     global_embedding_service_instance,
     SUPABASE_SCHEMA,
     SUPABASE_KEY,

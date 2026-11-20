@@ -16,21 +16,46 @@ $ cp env.example .env
 
 ## ... fill .env.local accordingly ...
 
-$ uv run app/agent.py 
+$ uv run uvicorn main:app --app-dir app --reload
+```
+
+## Layout
+
+`app/` is the import root (it is on `PYTHONPATH` in the Dockerfile, the jobs and the tests), so modules
+import each other as `from core.config import ...`.
+
+```
+app/
+  main.py         FastAPI app: lifespan, middleware, routers
+  api/            routers: auth, chat (HTTP + WebSocket), admin/ingestion; deps.py holds auth dependencies
+  core/           config, security (JWT, sessions), llm, prompt_safety
+  agents/         common/rag.py, documents/graph.py, audio/graph.py (LangGraph pipelines)
+  integrations/   m365.py (Microsoft login and Graph profile)
+  ingestion/      SharePoint sync, document and audio indexers, ingestion panel state, nightly window
+  db/             db_setup.py and SQL migrations
+  models/         pydantic request/response schemas
+jobs/indexing.py  indexer service entry point
+```
+
+## Running the API:
+
+```bash
+$ uv run uvicorn main:app --app-dir app --reload
 ```
 
 ## Running Indexer:
 
 ```bash
-$ uv run app/indexer.py - Manual indexing.
+$ uv run python jobs/indexing.py                          # indexer service (nightly window)
+$ PYTHONPATH=app uv run python -m ingestion.indexer       # manual document indexing
+$ PYTHONPATH=app uv run python -m db.db_setup --check     # check the Supabase setup
 ```
 
-## Running Agent:
+## Running Agent in the console:
 
 ```bash
-$ uv run app/agent.py dev - Development and Debugging
-$ uv run app/agent.py console - Console only.
-$ uv run app/agent.py start - Production version.
+$ PYTHONPATH=app uv run python -m agents.documents.graph  # documents
+$ PYTHONPATH=app uv run python -m agents.audio.graph      # calls
 ```
 
 ## Running tests:

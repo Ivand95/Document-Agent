@@ -12,10 +12,9 @@ from langchain_core.messages import BaseMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, END
 
-import llm
-import prompt_safety
-import rag
-from config import (
+from core import llm, prompt_safety
+from agents.common import rag
+from core.config import (
     AUDIO_MATCH_THRESHOLD,
     RETRIEVAL_CANDIDATES,
     RETRIEVAL_K,
