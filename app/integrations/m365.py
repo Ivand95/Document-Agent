@@ -1,3 +1,4 @@
+import logging
 import os
 import httpx
 from fastapi import HTTPException
@@ -14,6 +15,22 @@ GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mai
 
 # Login only needs the user's own profile: no SharePoint or offline access
 LOGIN_SCOPE = "User.Read"
+
+# Multi-tenant authorities would let accounts from any organization sign in (and be registered)
+SHARED_TENANTS = {"common", "organizations", "consumers"}
+
+log = logging.getLogger("m365")
+
+
+def validate_tenant(production: bool):
+    """Logins must come from the cooperative's own tenant, since a first login registers the user."""
+    tenant = (TENANT_ID or "").strip().lower()
+    if tenant and tenant not in SHARED_TENANTS:
+        return
+    message = "OFFICE_365_TENANT_ID must be the cooperative's own tenant (not empty, common, organizations or consumers)"
+    if production:
+        raise RuntimeError(f"Unsafe production configuration: {message}")
+    log.warning(message)
 
 
 async def exchange_code_for_token(code: str, code_verifier: str):

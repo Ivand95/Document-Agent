@@ -15,6 +15,7 @@ from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 import main  # noqa: E402
 from api import auth as api_auth, chat  # noqa: E402
+from users import service as users  # noqa: E402
 from core import security  # noqa: E402
 from models.user_profile import UserProfile  # noqa: E402
 
@@ -175,8 +176,10 @@ class LoginFlowTest(EnvTestCase):
     def test_callback_success_posts_only_to_the_opener_origin_and_state_is_single_use(self):
         state = self.start_login(origin="https://front.example.com")["state"][0]
         profile = UserProfile(id="1", name='Ana </script><b>', email="ana@coop.test", department="IT", position="Analista")
+        user = users.User(id="11111111-1111-1111-1111-111111111111", status="active", perm_version=1)
         with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock(return_value={"access_token": "ms"})) as ex, \
-             mock.patch.object(api_auth, "get_user_profile", mock.AsyncMock(return_value=profile)):
+             mock.patch.object(api_auth, "get_user_profile", mock.AsyncMock(return_value=profile)), \
+             mock.patch.object(users, "provision", return_value=user):
             html = self.client.get(f"/auth/callback?code=abc&state={state}").text
             self.assertEqual(ex.call_args.args[0], "abc")
             self.assertTrue(ex.call_args.args[1])  # PKCE verifier
@@ -198,8 +201,12 @@ class SessionEndpointsTest(EnvTestCase):
     def setUp(self):
         self.env(APP_ENV="test", JWT_SECRET_KEY=STRONG_SECRET)
         self.client = TestClient(main.app)
-        self.token = security.create_access_token({"sub": "a@b", "department": "IT", "position": "x"})
+        user_id = "11111111-1111-1111-1111-111111111111"
+        self.token = security.create_access_token({"sub": "a@b", "department": "IT", "position": "x", "user_id": user_id})
         self.auth = {"Authorization": f"Bearer {self.token}"}
+        patcher = mock.patch.object(users, "get_user", return_value=users.User(id=user_id, status="active", perm_version=1))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_refresh_returns_a_working_new_token(self):
         new = self.client.post("/auth/refresh", headers=self.auth).json()["access_token"]

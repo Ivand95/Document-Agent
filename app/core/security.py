@@ -126,12 +126,18 @@ def revoke_token(claims: dict):
         _revoked[claims["jti"]] = claims["exp"]
 
 
-def refresh_token(claims: dict) -> str:
-    """New token for the same session. Raises JWTError once the session reached its absolute limit."""
+SESSION_CLAIMS = ("sub", "name", "department", "position", "user_id", "perm_version")
+
+
+def refresh_token(claims: dict, perm_version=None) -> str:
+    """New token for the same session. Raises JWTError once the session reached its absolute limit.
+    `perm_version` is the user's current value, so changes to their permissions reach the new token."""
     session_start = claims.get("session_start", 0)
     if session_start + SESSION_MAX_HOURS * 3600 <= time.time():
         raise JWTError("Session expired")
-    keep = {k: claims[k] for k in ("sub", "name", "department", "position") if k in claims}
+    keep = {k: claims[k] for k in SESSION_CLAIMS if k in claims}
+    if perm_version is not None:
+        keep["perm_version"] = perm_version
     return create_access_token(keep, session_start=session_start)
 
 

@@ -1,5 +1,6 @@
 """Microsoft 365 login (state + PKCE), token refresh and logout."""
 
+import asyncio
 import json
 import logging
 import os
@@ -19,12 +20,20 @@ from core.security import (
     revoke_token,
 )
 from integrations.m365 import AUTHORITY, CLIENT_ID, LOGIN_SCOPE, exchange_code_for_token, get_user_profile
+from users import service as users
 
 log = logging.getLogger("main")
 
 router = APIRouter()
 
 LOGIN_ERROR = "No se pudo completar el inicio de sesión. Intenta de nuevo."
+STATUS_MESSAGES = {
+    "pending": "Tu cuenta fue registrada y está pendiente de aprobación por un administrador.",
+    "disabled": "Tu cuenta está deshabilitada. Contacta al administrador.",
+}
+PROFILE_INCOMPLETE = (
+    "Tu perfil de Microsoft 365 no tiene departamento o cargo asignado. Contacta a Tecnología para completarlo."
+)
 REDIRECT_URI = os.getenv("AUTH_REDIRECT_URI", "http://localhost:8000")
 
 
@@ -80,8 +89,9 @@ async def auth_callback(
     1. Checks `state` (one-time) and recovers the PKCE verifier
     2. Exchange code for MS Graph Token
     3. Get User Profile (Department)
-    4. Mint internal JWT with department
-    5. Return HTML that sends data to the opener window (only to the origin that started the login)
+    4. Register the user on their first login, or refresh their profile (only active users get a token)
+    5. Mint internal JWT with department and user id
+    6. Return HTML that sends data to the opener window (only to the origin that started the login)
     """
     verifier, opener = consume_login(state)
     target = opener or "*"
@@ -94,6 +104,17 @@ async def auth_callback(
     try:
         ms_token_data = await exchange_code_for_token(code, verifier)
         user_profile = await get_user_profile(ms_token_data.get("access_token"))
+        user = await asyncio.to_thread(users.provision, user_profile)
+
+        if not user.active:
+            log.info("Login refused: user %s is %s", user.id, user.status)
+            return callback_page(
+                {"type": "ms-auth-callback", "status": user.status, "error": STATUS_MESSAGES[user.status]}, target
+            )
+        # Every chat checks department and position, so a token without them would be useless
+        if not user_profile.department or not user_profile.position:
+            log.info("Login refused: user %s has no department or position in Microsoft 365", user.id)
+            return callback_page({"type": "ms-auth-callback", "error": PROFILE_INCOMPLETE}, target)
 
         session_token = create_access_token(
             {
@@ -101,6 +122,8 @@ async def auth_callback(
                 "name": user_profile.name,
                 "department": user_profile.department,
                 "position": user_profile.position,
+                "user_id": user.id,
+                "perm_version": user.perm_version,
             }
         )
         payload = {
@@ -120,9 +143,18 @@ async def auth_callback(
 
 @router.post("/auth/refresh")
 async def auth_refresh(claims: dict = Depends(get_current_user_claims)):
-    """New short-lived token for the same session (it can't outlive SESSION_MAX_HOURS)."""
+    """New short-lived token for the same session (it can't outlive SESSION_MAX_HOURS).
+    Only while the user is still active; tokens from before user registration must log in again."""
+    user_id = claims.get("user_id")
     try:
-        return {"access_token": refresh_token(claims)}
+        user = await asyncio.to_thread(users.get_user, user_id) if user_id else None
+    except Exception:
+        log.exception("Could not check the user on refresh")
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
+    if user is None or not user.active:
+        raise HTTPException(status_code=401, detail="Session expired")
+    try:
+        return {"access_token": refresh_token(claims, perm_version=user.perm_version)}
     except JWTError:
         raise HTTPException(status_code=401, detail="Session expired")
 

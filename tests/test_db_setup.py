@@ -12,6 +12,9 @@ from db import db_setup  # noqa: E402
 DIM = db_setup.EMBEDDING_DIM
 
 
+ALL_MIGRATIONS = [p.stem for p in db_setup.migration_files()]
+
+
 def unit_vector(i):
     """Orthogonal vectors: identical -> similarity 1, different -> 0."""
     return "[" + ",".join("1" if j == i else "0" for j in range(DIM)) + "]"
@@ -172,7 +175,7 @@ class PostgresIntegrationTest(unittest.TestCase):
 
     def test_fresh_database_gets_tables_functions_and_working_search(self):
         applied = db_setup.apply_migrations(self.dsn)
-        self.assertEqual(applied, ["0001_vector_search", "0002_deny_by_default", "0003_ingestion_admin"])
+        self.assertEqual(applied, ALL_MIGRATIONS)
 
         with self.connect() as c:
             self.fill(c)
@@ -309,7 +312,7 @@ class PostgresIntegrationTest(unittest.TestCase):
         self.use_schema("public")
         with self.connect() as c:  # another app already owns a table and a migrations-like table in public
             c.execute("create table public.schema_migrations (version text)")
-        self.assertEqual(db_setup.apply_migrations(self.dsn), ["0001_vector_search", "0002_deny_by_default", "0003_ingestion_admin"])
+        self.assertEqual(db_setup.apply_migrations(self.dsn), ALL_MIGRATIONS)
         with self.connect() as c:
             self.fill(c)
             self.assertEqual([h[0] for h in self.search(c, 0, categories=["HR"])], ["vacaciones"])
@@ -347,7 +350,72 @@ class PostgresIntegrationTest(unittest.TestCase):
 
         with ThreadPoolExecutor(4) as pool:
             results = list(pool.map(lambda _: db_setup.apply_migrations(self.dsn), range(4)))
-        self.assertEqual(sorted(len(r) for r in results), [0, 0, 0, 2])  # one runner applies both migrations
+        self.assertEqual(sorted(len(r) for r in results), [0, 0, 0, len(ALL_MIGRATIONS)])  # one runner applies them all
+
+    # --- Users (0004) ---
+    def upsert(self, c, oid="oid-1", email="Ana@Coop.test", department="IT", position="Analista", default="active"):
+        return c.execute(
+            f"select user_id, user_status, user_perm_version, created from {self.schema}.upsert_m365_user(%s, %s, %s, %s, %s, %s)",
+            (oid, email, "Ana", department, position, default),
+        ).fetchone()
+
+    def test_first_login_registers_and_later_logins_refresh_the_profile(self):
+        import psycopg
+
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            user_id, status, version, created = self.upsert(c, default="pending")
+            self.assertEqual((status, version, created), ("pending", 1, True))
+
+            again = self.upsert(c, email="ana.nueva@coop.test", department="  ", position="GR - Ventas", default="active")
+            self.assertEqual(again, (user_id, "pending", 1, False))  # the status is never changed by a login
+            row = c.execute(f"select email, department, position, first_login_at <= last_login_at "
+                            f"from {self.schema}.users where id = %s", (user_id,)).fetchone()
+            self.assertEqual(row, ("ana.nueva@coop.test", None, "GR - Ventas", True))
+
+            for bad in ({"oid": " "}, {"default": "disabled"}):
+                with self.assertRaises(psycopg.errors.RaiseException):
+                    self.upsert(c, **bad)
+
+    def test_an_email_moved_to_another_account_is_released(self):
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            old_id = self.upsert(c, oid="old", email="ventas@coop.test")[0]
+            new_id = self.upsert(c, oid="new", email="VENTAS@coop.test")[0]
+            emails = dict(c.execute(f"select id, email from {self.schema}.users").fetchall())
+            self.assertEqual(emails, {old_id: None, new_id: "ventas@coop.test"})
+
+    def test_status_changes_bump_perm_version_only_when_they_change_something(self):
+        import psycopg
+
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            user_id = self.upsert(c)[0]
+            change = lambda status: c.execute(  # noqa: E731
+                f"select user_status, user_perm_version from {self.schema}.set_user_status(%s, %s, 'admin')",
+                (user_id, status),
+            ).fetchone()
+            self.assertEqual(change("disabled"), ("disabled", 2))
+            self.assertEqual(change("disabled"), ("disabled", 2))
+            self.assertEqual(change("active"), ("active", 3))
+            self.assertIsNone(c.execute(
+                f"select * from {self.schema}.set_user_status(gen_random_uuid(), 'active', 'admin')").fetchone())
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                change("root")
+
+    def test_only_the_service_role_can_register_users(self):
+        import psycopg
+
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            c.execute("set role service_role")
+            self.assertTrue(self.upsert(c)[3])
+            c.execute("reset role")
+            for role in ("anon", "authenticated"):
+                c.execute(f"set role {role}")
+                with self.assertRaises(psycopg.errors.InsufficientPrivilege, msg=role):
+                    self.upsert(c, oid=f"x-{role}")
+                c.execute("reset role")
 
 
 if __name__ == "__main__":

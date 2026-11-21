@@ -14,14 +14,17 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from api import auth, chat  # noqa: E402
 from api.admin import ingestion as admin_ingestion  # noqa: E402
-from core.security import frontend_origins, validate_settings  # noqa: E402
+from api.admin import users as admin_users  # noqa: E402
+from core.security import frontend_origins, is_production, validate_settings  # noqa: E402
 from db.db_setup import ensure_database  # noqa: E402
+from integrations.m365 import validate_tenant  # noqa: E402
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Refuses to start in production with an unsafe JWT secret or CORS origin
+    # Refuses to start in production with an unsafe JWT secret, CORS origin or shared M365 tenant
     validate_settings()
+    validate_tenant(is_production())
     # Creates the search tables/functions if SUPABASE_DB_URL is set, and logs anything still missing
     await asyncio.to_thread(ensure_database)
     # Importing the agents (LangGraph, clients) takes seconds: do it now, not on the first question
@@ -50,6 +53,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(admin_ingestion.router)
+app.include_router(admin_users.router)
 
 
 if __name__ == "__main__":

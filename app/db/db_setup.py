@@ -35,6 +35,8 @@ TRACKING_TABLE = "document_agent_migrations"  # own name: the schema may be `pub
 GRANT_ROLES = [r.strip() for r in os.getenv("DB_GRANT_ROLES", "service_role").split(",") if r.strip()]
 # Roles that must NOT call the search functions (Supabase grants them by default in public)
 REVOKE_ROLES = ("anon", "authenticated")
+# The app's own tables besides the two search tables
+APP_TABLES = ("ingestion_folders", "ingestion_state", "users")
 
 
 def identifiers():
@@ -83,7 +85,7 @@ def apply_grants(conn, names):
 
     schema, docs, audio = names["schema"], names["docs_table"], names["audio_table"]
     tables = sql.SQL(", ").join(
-        sql.Identifier(schema, t) for t in (docs, audio, "ingestion_folders", "ingestion_state")
+        sql.Identifier(schema, t) for t in (docs, audio, *APP_TABLES)
     )
     functions = [
         sql.SQL("{}.match_documents(vector, double precision, integer, text[])").format(sql.Identifier(schema)),
@@ -91,6 +93,8 @@ def apply_grants(conn, names):
             sql.Identifier(schema)
         ),
         sql.SQL("{}.set_audio_department(text, text)").format(sql.Identifier(schema)),
+        sql.SQL("{}.upsert_m365_user(text, text, text, text, text, text)").format(sql.Identifier(schema)),
+        sql.SQL("{}.set_user_status(uuid, text, text)").format(sql.Identifier(schema)),
     ]
     # `vector` must resolve in the search path used for the grant statements
     conn.execute(sql.SQL("set local search_path = {}, {}, public").format(
@@ -220,6 +224,8 @@ def check_search_ready(client=global_supabase_client):
             {"query_embedding": vector, "match_threshold": 0.99, "match_count": 1,
              "filter_extension": None, "filter_date": None, "filter_recipient": None},
         ).execute(),
+        # Login registers every user here: without it nobody can sign in
+        f"table {SUPABASE_SCHEMA}.users": lambda: schema.table("users").select("id").limit(1).execute(),
     }
     problems = []
     for what, call in checks.items():
@@ -266,7 +272,8 @@ def main():
         for path in migration_files():
             print(f"-- {path.name}\n{render(path.read_text(), 'extensions')}")
         print(f"grant usage on schema {SUPABASE_SCHEMA} to service_role;")
-        print(f"grant all on table {SUPABASE_SCHEMA}.{SUPABASE_TABLE}, {SUPABASE_SCHEMA}.{SUPABASE_AUDIO_TABLE} to service_role;")
+        tables = ", ".join(f"{SUPABASE_SCHEMA}.{t}" for t in (SUPABASE_TABLE, SUPABASE_AUDIO_TABLE, *APP_TABLES))
+        print(f"grant all on table {tables} to service_role;")
         print("grant execute on all functions in schema " + SUPABASE_SCHEMA + " to service_role;")
         if SUPABASE_SCHEMA != "public":
             print("-- and expose the schema: PGRST_DB_SCHEMAS on the rest service (self-hosted) or Settings > API (cloud)")

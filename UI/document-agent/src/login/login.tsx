@@ -16,6 +16,7 @@ export const Login = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserI
     const [showPassword, setShowPassword] = useState(false)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
+    const [notice, setNotice] = useState('')
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault()
@@ -64,7 +65,14 @@ export const Login = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserI
                 setLoading(false)
 
                 if (event.data.error) {
-                    setError(event.data.error)
+                    // A pending account is not a failure: the user just waits for an admin
+                    if (event.data.status === 'pending') {
+                        setError('')
+                        setNotice(event.data.error)
+                    } else {
+                        setNotice('')
+                        setError(event.data.error)
+                    }
                     return
                 }
 
@@ -197,6 +205,7 @@ export const Login = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserI
                         Iniciar sesión con Microsoft
                     </Button>
                     {error && <p className="login-error">{error}</p>}
+                    {notice && <p className="login-notice" role="status">{notice}</p>}
                 </form>
 
                 <p className="login-hint">
