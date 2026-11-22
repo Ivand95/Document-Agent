@@ -12,8 +12,10 @@ import uvicorn  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
-from api import auth, chat  # noqa: E402
+from api import auth, chat, me  # noqa: E402
+from api.admin import audit as admin_audit  # noqa: E402
 from api.admin import ingestion as admin_ingestion  # noqa: E402
+from api.admin import rbac as admin_rbac  # noqa: E402
 from api.admin import users as admin_users  # noqa: E402
 from core.security import frontend_origins, is_production, validate_settings  # noqa: E402
 from db.db_setup import ensure_database  # noqa: E402
@@ -46,7 +48,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=frontend_origins() or ["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -54,6 +56,9 @@ app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(admin_ingestion.router)
 app.include_router(admin_users.router)
+app.include_router(admin_rbac.router)
+app.include_router(admin_audit.router)
+app.include_router(me.router)
 
 
 if __name__ == "__main__":

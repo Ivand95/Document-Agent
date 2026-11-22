@@ -36,7 +36,10 @@ GRANT_ROLES = [r.strip() for r in os.getenv("DB_GRANT_ROLES", "service_role").sp
 # Roles that must NOT call the search functions (Supabase grants them by default in public)
 REVOKE_ROLES = ("anon", "authenticated")
 # The app's own tables besides the two search tables
-APP_TABLES = ("ingestion_folders", "ingestion_state", "users")
+APP_TABLES = (
+    "ingestion_folders", "ingestion_state", "users",
+    "roles", "user_roles", "role_mappings", "permissions", "audit_log",
+)
 
 
 def identifiers():
@@ -226,6 +229,8 @@ def check_search_ready(client=global_supabase_client):
         ).execute(),
         # Login registers every user here: without it nobody can sign in
         f"table {SUPABASE_SCHEMA}.users": lambda: schema.table("users").select("id").limit(1).execute(),
+        # Every API call checks permissions here: without it nobody can use the agents
+        f"table {SUPABASE_SCHEMA}.permissions": lambda: schema.table("permissions").select("id").limit(1).execute(),
     }
     problems = []
     for what, call in checks.items():

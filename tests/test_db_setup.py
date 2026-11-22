@@ -417,6 +417,74 @@ class PostgresIntegrationTest(unittest.TestCase):
                     self.upsert(c, oid=f"x-{role}")
                 c.execute("reset role")
 
+    # --- RBAC (0005) ---
+    def seeded_policy(self, c):
+        from rbac.model import Mapping, Policy, Role, Rule
+
+        q = lambda sql: c.execute(sql.replace("@", self.schema + ".")).fetchall()  # noqa: E731
+        roles = {str(r[0]): Role(str(r[0]), r[1], r[2], r[3], r[4]) for r in q("select id, key, name, description, is_system from @roles")}
+        mappings = tuple(Mapping(str(m[0]), m[1], m[2], str(m[3])) for m in q("select id, kind, value, role_id from @role_mappings"))
+        rules = {}
+        for p in q("select id, subject_type, subject_id, resource_type, resource_id, action, effect, constraints "
+                   "from @permissions where subject_type = 'role'"):
+            rules.setdefault(str(p[2]), []).append(Rule(str(p[0]), *p[1:2], str(p[2]), *p[3:]))
+        return Policy(roles, mappings, {k: tuple(v) for k, v in rules.items()})
+
+    def test_rbac_seed_reproduces_the_old_rules(self):
+        from core.config import DEPARTMENT_LIST, get_department_categories
+        from rbac.model import Access, Subject
+
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            c.execute("set role service_role")  # read the way the backend reads it
+            policy = self.seeded_policy(c)
+        for department in (*DEPARTMENT_LIST, None, "", "Desconocido"):
+            for position in (None, "", "Analista", "GR - Director", "gr - x", " GR - x"):
+                access = Access(Subject("u", "active", 1, department, position), policy)
+                self.assertEqual(sorted(access.doc_categories()), sorted(set(get_department_categories(department, position))))
+                self.assertEqual(access.can("use", "agent", "audio"), bool(position and position.startswith("GR -")))
+                self.assertEqual(bool(access.allowed_ids("admin", "admin_area")), department == "Tecnología")
+
+    def test_rbac_changes_bump_perm_version_and_follow_deleted_roles(self):
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            c.execute("set role service_role")
+            user_id, other = self.upsert(c)[0], self.upsert(c, oid="oid-2", email="b@coop.test")[0]
+            q = lambda sql, *a: c.execute(sql.replace("@@", self.schema + "."), a).fetchall()  # noqa: E731
+            version = lambda u=user_id: q("select perm_version from @@users where id = %s", u)[0][0]  # noqa: E731
+            role = q("select id from @@roles where key = 'audio_user'")[0][0]
+            q("insert into @@user_roles (user_id, role_id, granted_by) values (%s, %s, 'x') returning 1", user_id, role)
+            self.assertEqual(version(), 2)
+            q("insert into @@permissions (subject_type, subject_id, resource_type, resource_id, action) "
+              "values ('user', %s, 'agent', 'audio', 'use') returning 1", user_id)
+            self.assertEqual(version(), 3)
+            q("update @@permissions set effect = 'deny' where subject_id = %s returning 1", user_id)
+            self.assertEqual(version(), 4)  # once per change
+            q("insert into @@permissions (subject_type, subject_id, resource_type, resource_id, action) "
+              "values ('role', %s, 'model', 'x', 'use') returning 1", role)
+            self.assertEqual((version(), version(other)), (5, 1))  # only holders of the role
+
+            custom = q("insert into @@roles (key, name) values ('contadores', 'C') returning id")[0][0]
+            q("insert into @@user_roles (user_id, role_id, granted_by) values (%s, %s, 'x') returning 1", other, custom)
+            q("insert into @@permissions (subject_type, subject_id, resource_type, resource_id, action) "
+              "values ('role', %s, 'agent', 'audio', 'use') returning 1", custom)
+            q("delete from @@roles where id = %s returning 1", custom)
+            self.assertEqual(q("select count(*) from @@permissions where subject_id = %s", custom)[0][0], 0)
+            self.assertEqual(q("select count(*) from @@user_roles where role_id = %s", custom)[0][0], 0)
+            q("insert into @@audit_log (user_id, action) values (%s, 'test') returning id", user_id)
+
+    def test_only_the_service_role_reads_rbac_tables(self):
+        import psycopg
+
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            for role in ("anon", "authenticated"):
+                c.execute(f"set role {role}")
+                for table in ("roles", "user_roles", "role_mappings", "permissions", "audit_log"):
+                    with self.assertRaises(psycopg.errors.InsufficientPrivilege, msg=(role, table)):
+                        c.execute(f"select 1 from {self.schema}.{table}")
+                c.execute("reset role")
+
 
 if __name__ == "__main__":
     unittest.main()

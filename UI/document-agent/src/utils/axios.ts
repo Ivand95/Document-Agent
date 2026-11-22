@@ -34,7 +34,21 @@ export const audioAgentWebSocket = (token: string) => {
   return new WebSocket(`${WS_URL}/ws/chat/audio?token=${token}`);
 };
 
-// ---- Ingestion panel (Tecnología only) ----
+// ---- Permissions (RBAC). The UI only uses them to choose what to show; the API enforces them ----
+
+export interface MyPermissions {
+  user_id: string;
+  perm_version: number;
+  roles: string[];
+  agents: string[];
+  admin_areas: string[];
+  doc_categories: string[];
+}
+
+export const getMyPermissions = (token: string) =>
+  http.get<MyPermissions>("/me/permissions", bearer(token));
+
+// ---- Ingestion panel (admin area "ingestion") ----
 
 export interface FolderSetting {
   name: string;

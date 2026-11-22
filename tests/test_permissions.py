@@ -17,8 +17,8 @@ from integrations import m365 as auth  # noqa: E402
 from core import config  # noqa: E402
 import main  # noqa: E402
 from api import chat  # noqa: E402
-from core import security  # noqa: E402
 from test_agents import FakeLLM, LLMTestCase, doc, run  # noqa: E402
+from rbac_fixtures import FakeRBAC  # noqa: E402
 
 REAL_SEARCH = agent.search_documents  # the class below replaces it with a fake while its tests run
 
@@ -64,12 +64,14 @@ class CategoryAccessTest(unittest.TestCase):
             self.assertNotIn("STAFF GERENCIAL", config.get_department_categories("Tecnología", position), position)
 
     def test_audio_access_never_defaults_open(self):
+        from rbac.model import Access, Subject
+        from rbac_fixtures import seed_policy
+
         with mock.patch.dict(os.environ, {"AUDIO_ALLOWED_DEPARTMENTS": ""}):
-            self.assertFalse(config.can_access_audio(None, None))
-            self.assertFalse(config.can_access_audio("Tecnología", "Analista"))
-            self.assertTrue(config.can_access_audio("Tecnología", "GR - Director"))
-        with mock.patch.dict(os.environ, {"AUDIO_ALLOWED_DEPARTMENTS": " , "}):
-            self.assertFalse(config.can_access_audio("", ""))
+            for department, position, allowed in ((None, None, False), ("Tecnología", "Analista", False),
+                                                   ("Tecnología", "GR - Director", True), ("", "", False)):
+                access = Access(Subject("u", "active", 1, department, position), seed_policy())
+                self.assertEqual(access.can("use", "agent", "audio"), allowed, (department, position))
 
 
 class RetrievalTrimmingTest(LLMTestCase):
@@ -144,6 +146,26 @@ class RetrievalTrimmingTest(LLMTestCase):
             self.assertIsInstance(filters, list)
             self.assertTrue(filters)
 
+    def test_rbac_categories_replace_the_department_rule(self):
+        # The API passes the categories RBAC allows; the department in the state no longer decides
+        self.use_llm(FakeLLM(answer={"answer": "ok", "used_sources": [1, 2, 3], "tags": []}, ranking=[1, 2, 3]))
+        run(agent.app_graph.ainvoke(
+            {"messages": [HumanMessage(content="hola")], "user_department": "Tecnología", "position": "GR - X",
+             "allowed_categories": ["HR"]},
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
+        ))
+        self.assertEqual(self.filters[-1], ["HR"])
+
+    def test_no_allowed_category_searches_nothing(self):
+        self.use_llm(FakeLLM(answer={"answer": "ok", "used_sources": [], "tags": []}))
+        result = run(agent.app_graph.ainvoke(
+            {"messages": [HumanMessage(content="hola")], "user_department": "Tecnología", "position": "GR - X",
+             "allowed_categories": []},
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
+        ))
+        self.assertEqual(self.filters, [])  # the search was never called
+        self.assertEqual(result["answer"]["sources"], [])
+
     def test_a_nonexistent_source_number_does_not_leak_anything(self):
         self.use_llm(FakeLLM(answer={"answer": "ok", "used_sources": [3, 4, 5, 99], "tags": []}))
         result = self.ask("hola", "Gestion Humana")["answer"]
@@ -217,7 +239,7 @@ class EndpointAccessTest(unittest.TestCase):
                 captured.update(inputs)
                 return {"answer": {"answer": "ok"}}
 
-        token = security.create_access_token({"sub": "a@b", "department": "Tecnología", "position": "Analista"})
+        token = FakeRBAC().install(self).token("Tecnología", "Analista")
         with mock.patch.object(chat, "get_app_graph", return_value=Graph()):
             r = self.client.post(
                 "/chat",
@@ -226,6 +248,7 @@ class EndpointAccessTest(unittest.TestCase):
             )
         self.assertEqual(r.status_code, 200)
         self.assertEqual((captured["user_department"], captured["position"]), ("Tecnología", "Analista"))
+        self.assertEqual(captured["allowed_categories"], ["IT", "OTROS"])
 
     def test_a_signed_token_for_another_audience_does_not_open_the_api(self):
         from jose import jwt as jose_jwt

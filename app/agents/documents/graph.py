@@ -3,7 +3,7 @@ import logging
 import operator
 import sys
 from typing import Annotated, List
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage
@@ -60,6 +60,9 @@ FALLBACK_ERROR = "Lo siento, tuve un problema al generar la respuesta. Por favor
 class AgentState(TypedDict):
     position: str
     user_department: str
+    # Categories the user may search, from RBAC (set by the API on every question). Absent only for
+    # internal callers (CLI, evals), which fall back to the old department rule.
+    allowed_categories: NotRequired[List[str]]
     messages: Annotated[List[BaseMessage], operator.add]
     search_query: str
     context: List[Document]
@@ -172,11 +175,14 @@ async def rewrite_query(state: AgentState):
 
 
 def retrieve_documents(state: AgentState):
-    """Retrieves chunks the user's department/position may see, then reranks them."""
+    """Retrieves chunks of the categories the user may see (RBAC), then reranks them."""
     query = state.get("search_query") or state["messages"][-1].content
-    filters = get_department_categories(state["user_department"], state.get("position", ""))
+    filters = state.get("allowed_categories")
+    if filters is None:
+        filters = get_department_categories(state["user_department"], state.get("position", ""))
 
-    candidates = prompt_safety.drop_injected(search_documents(query, filters))
+    # No category allowed: nothing to search (the SQL function would return nothing anyway)
+    candidates = prompt_safety.drop_injected(search_documents(query, filters)) if filters else []
     docs = rag.rerank(query, candidates, RETRIEVAL_K)
     log.info("Retrieved %d candidates, kept %d", len(candidates), len(docs))
     return {"context": docs}

@@ -27,10 +27,13 @@ import each other as `from core.config import ...`.
 ```
 app/
   main.py         FastAPI app: lifespan, middleware, routers
-  api/            routers: auth, chat (HTTP + WebSocket), admin/ingestion; deps.py holds auth dependencies
+  api/            routers: auth, chat (HTTP + WebSocket), me, admin/{ingestion,users,rbac,audit};
+                  deps.py holds the auth and permission dependencies (require(action, type, id))
   core/           config, security (JWT, sessions), llm, prompt_safety
   agents/         common/rag.py, documents/graph.py, audio/graph.py (LangGraph pipelines)
   integrations/   m365.py (Microsoft login and Graph profile)
+  users/          users registered by their Microsoft 365 login
+  rbac/           roles, permissions and audit log: evaluation (model.py), data (service.py), bootstrap CLI
   ingestion/      SharePoint sync, document and audio indexers, ingestion panel state, nightly window
   db/             db_setup.py and SQL migrations
   models/         pydantic request/response schemas
@@ -51,12 +54,27 @@ $ PYTHONPATH=app uv run python -m ingestion.indexer       # manual document inde
 $ PYTHONPATH=app uv run python -m db.db_setup --check     # check the Supabase setup
 ```
 
+## Access control (RBAC)
+
+Users are registered by their first Microsoft 365 login. What they may do comes from roles: the ones that
+follow from their department or position (`/admin/rbac/mappings`, e.g. `GR -` -> `manager`), the
+`everyone` role `employee`, and roles given by hand. Migration 0005 seeds the rules that were hard-coded
+before (department -> document category, managers, Tecnología as admin), so nothing changes on deploy.
+Deny by default; an explicit deny beats an allow; a user's own permissions override their roles'.
+
+```bash
+$ PYTHONPATH=app uv run python -m rbac.cli grant-super-admin persona@cooperativa.com  # after their first login
+$ PYTHONPATH=app uv run python -m rbac.cli effective persona@cooperativa.com          # why they can/can't
+```
+
 ## Running Agent in the console:
 
 ```bash
 $ PYTHONPATH=app uv run python -m agents.documents.graph  # documents
 $ PYTHONPATH=app uv run python -m agents.audio.graph      # calls
 ```
+
+The console uses the old department rule for document categories (CLI_DEPARTMENT, CLI_POSITION), not RBAC.
 
 ## Running tests:
 

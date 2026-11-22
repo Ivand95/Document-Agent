@@ -136,33 +136,15 @@ def _plain(text: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c)).strip().casefold()
 
 
-def is_admin_department(department: str) -> bool:
-    """The configuration panel is only for ADMIN_DEPARTMENTS (comma separated, default Tecnología)."""
-    allowed = {_plain(d) for d in os.getenv("ADMIN_DEPARTMENTS", "Tecnología").split(",") if d.strip()}
-    return _plain(department) in allowed
-
-
 def department_options() -> list[dict]:
     """Departments a call folder can be assigned to: code + label."""
     codes = list(dict.fromkeys(DEPARTMENT_LIST.values())) + ["OTROS"]
     return [{"code": c, "label": CATEGORY_LABELS.get(c, c)} for c in codes]
 
 
-def can_access_audio(department: str, position: str) -> bool:
-    """Call recordings are sensitive: managers plus the departments listed in
-    AUDIO_ALLOWED_DEPARTMENTS (comma separated). Unset means managers only."""
-    if position and position.startswith("GR -"):
-        return True
-    allowed = {
-        d.strip()
-        for d in os.getenv("AUDIO_ALLOWED_DEPARTMENTS", "").split(",")
-        if d.strip()
-    }
-    return department in allowed
-
-
-
 def get_department_categories(department: str, position: str) -> list[str]:
+    """The rule used before RBAC. The API now takes categories from RBAC (seeded with this same rule in
+    migration 0005); this stays for the local CLI and evals, and as the reference the seed must match."""
     if position and position.startswith("GR -"):
         return list(DEPARTMENT_LIST.values()) + ["OTROS", "STAFF GERENCIAL"]
     elif department not in DEPARTMENT_LIST:

@@ -8,6 +8,7 @@ from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from jose import JWTError, jwt  # noqa: E402
@@ -18,6 +19,7 @@ from api import auth as api_auth, chat  # noqa: E402
 from users import service as users  # noqa: E402
 from core import security  # noqa: E402
 from models.user_profile import UserProfile  # noqa: E402
+from rbac_fixtures import FakeRBAC  # noqa: E402
 
 FRONT = "https://front.example.com"
 STRONG_SECRET = "x" * 40
@@ -207,6 +209,7 @@ class SessionEndpointsTest(EnvTestCase):
         patcher = mock.patch.object(users, "get_user", return_value=users.User(id=user_id, status="active", perm_version=1))
         patcher.start()
         self.addCleanup(patcher.stop)
+        FakeRBAC().install(self).add_user("IT", "x", user_id=user_id)
 
     def test_refresh_returns_a_working_new_token(self):
         new = self.client.post("/auth/refresh", headers=self.auth).json()["access_token"]
@@ -245,7 +248,8 @@ class WebSocketSecurityTest(EnvTestCase):
         patcher = mock.patch.object(chat, "get_app_graph", return_value=self.graph)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.claims = {"sub": "a@b", "department": "IT", "position": "Analista"}
+        self.rbac = FakeRBAC().install(self)
+        self.claims = self.rbac.claims("IT", "Analista", sub="a@b")
 
     def connect(self, token, **kwargs):
         return self.client.websocket_connect(f"/ws/chat?token={token}", **kwargs)
@@ -295,6 +299,11 @@ class WebSocketSecurityTest(EnvTestCase):
     def test_renewal_for_another_user_is_refused(self):
         with self.connect(security.create_access_token(self.claims)) as ws:
             other = security.create_access_token({**self.claims, "sub": "someone@else"})
+            ws.send_json({"type": "auth", "token": other})
+            with self.assertRaises(WebSocketDisconnect):
+                ws.receive_json()
+        with self.connect(security.create_access_token(self.claims)) as ws:
+            other = security.create_access_token({**self.claims, "user_id": self.rbac.add_user("IT", "Analista")})
             ws.send_json({"type": "auth", "token": other})
             with self.assertRaises(WebSocketDisconnect):
                 ws.receive_json()

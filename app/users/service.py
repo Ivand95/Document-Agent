@@ -72,7 +72,8 @@ def provision(profile) -> User:
         id=row["user_id"], status=row["user_status"], perm_version=row["user_perm_version"], created=row["created"]
     )
     if user.created:
-        # Default roles from department/position mappings are assigned here once RBAC exists (WP3)
+        # No roles to assign: the ones that follow from department/position (role_mappings) are worked
+        # out at every check, so they always match the current Microsoft 365 profile
         log.info("New user registered from Microsoft 365 login (user %s, status %s)", user.id, user.status)
     return user
 

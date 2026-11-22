@@ -6,6 +6,7 @@ from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from jose import jwt  # noqa: E402
@@ -16,6 +17,8 @@ from core import security  # noqa: E402
 from integrations import m365  # noqa: E402
 from models.user_profile import UserProfile  # noqa: E402
 from users import service as users  # noqa: E402
+from api.admin import users as admin_users  # noqa: E402
+from rbac_fixtures import FakeRBAC  # noqa: E402
 
 UID = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
@@ -219,16 +222,32 @@ class RefreshTest(EnvTestCase):
 
 class AdminUsersTest(EnvTestCase):
     def setUp(self):
-        self.env(APP_ENV="test", JWT_SECRET_KEY=STRONG_SECRET, ADMIN_DEPARTMENTS="Tecnología")
+        self.env(APP_ENV="test", JWT_SECRET_KEY=STRONG_SECRET)
         self.client = TestClient(main.app)
+        self.rbac = FakeRBAC().install(self)
         self.list = self.patch(users, "list_users", return_value=[{"id": OTHER, "status": "pending"}])
         self.set = self.patch(users, "set_status", return_value=users.User(id=OTHER, status="active", perm_version=2))
+        self.target_roles = self.patch(admin_users, "roles_held_by_hand", return_value=set())
 
-    def headers(self, department="Tecnología", user_id=UID):
+    def headers(self, department="Tecnología", user_id=UID, roles=()):
+        self.rbac.add_user(department, "x", roles=roles, user_id=user_id)
         token = security.create_access_token(
             {"sub": "admin@coop.test", "department": department, "position": "x", "user_id": user_id}
         )
         return {"Authorization": f"Bearer {token}"}
+
+    def test_status_changes_are_audited(self):
+        self.client.post(f"/admin/users/{OTHER}/status", json={"status": "active"}, headers=self.headers())
+        self.assertEqual(self.rbac.audit[-1][:3], ("user.status", "user", OTHER))
+
+    def test_only_a_super_admin_changes_a_super_admin(self):
+        self.target_roles.return_value = {"super_admin"}
+        r = self.client.post(f"/admin/users/{OTHER}/status", json={"status": "disabled"}, headers=self.headers())
+        self.assertEqual(r.status_code, 403)
+        self.set.assert_not_called()
+        r = self.client.post(f"/admin/users/{OTHER}/status", json={"status": "disabled"},
+                             headers=self.headers(department="Marketing", roles=["super_admin"]))
+        self.assertEqual(r.status_code, 200)
 
     def test_only_admins_can_list_or_change_users(self):
         h = self.headers(department="Comercial")
