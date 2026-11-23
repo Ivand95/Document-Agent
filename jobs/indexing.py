@@ -5,15 +5,15 @@ import sys
 import time
 from pathlib import Path
 
-# app/ is the import root (`from core.config import ...`), so put it on the path
+# app/ modules use flat imports (`from config import ...`), so put app/ on the path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 
-from db.db_setup import ensure_database  # noqa: E402
-from ingestion import ingestion_config  # noqa: E402
-from ingestion.indexing_window import IndexingWindow  # noqa: E402
-from ingestion.ingestion_control import IngestionController  # noqa: E402
-from ingestion.indexing_runner import run_indexing  # noqa: E402
-from ingestion.ingestion_report import compute_report  # noqa: E402
+from db_setup import ensure_database  # noqa: E402
+import ingestion_config  # noqa: E402
+from indexing_window import IndexingWindow  # noqa: E402
+from ingestion_control import IngestionController  # noqa: E402
+from indexing_runner import run_indexing  # noqa: E402
+from ingestion_report import compute_report  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 CHECK_SECONDS = 60  # how often the loop looks at the clock

@@ -10,10 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # shares helpers with 
 
 from langchain_core.messages import HumanMessage  # noqa: E402
 
-from agents.documents import graph as agent  # noqa: E402
-from agents.audio import graph as audio_agent  # noqa: E402
-from core import llm, prompt_safety  # noqa: E402
-from agents.common import rag  # noqa: E402
+import agent  # noqa: E402
+import audio_agent  # noqa: E402
+import llm  # noqa: E402
+import prompt_safety  # noqa: E402
+import rag  # noqa: E402
 from test_agents import FakeLLM, LLMTestCase, doc, run  # noqa: E402
 
 ATTACKS = [

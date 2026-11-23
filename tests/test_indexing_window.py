@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 
-from ingestion.indexing_window import IndexingWindow, NightlyScheduler  # noqa: E402
+from indexing_window import IndexingWindow, NightlyScheduler  # noqa: E402
 
 TZ = ZoneInfo("America/Santo_Domingo")
 
@@ -74,7 +74,7 @@ class SchedulerTest(unittest.TestCase):
 
 class CutoffTest(unittest.TestCase):
     def test_docs_indexer_stops_when_window_closes(self):
-        from ingestion import indexer
+        import indexer
 
         class Fake(indexer.KnowledgeBaseIndexer):
             def __init__(self):

@@ -9,7 +9,7 @@ from urllib.parse import unquote
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 
 import requests  # noqa: E402
-from ingestion.sharepoint_sync import SharePointSyncBase, db_key, normalize_folder  # noqa: E402
+from sharepoint_sync import SharePointSyncBase, db_key, normalize_folder  # noqa: E402
 
 
 def file_item(item_id, name, modified="2026-01-01T00:00:00Z"):
@@ -253,8 +253,8 @@ class DownloadTest(unittest.TestCase):
         s = FakeSync({"root": []}, self.root)
         target = self.root / "a.pdf"
         responses = [self.response(503), self.response(503), self.response(200)]
-        with mock.patch("ingestion.sharepoint_sync.requests.get", side_effect=responses), mock.patch(
-            "ingestion.sharepoint_sync.time.sleep"
+        with mock.patch("sharepoint_sync.requests.get", side_effect=responses), mock.patch(
+            "sharepoint_sync.time.sleep"
         ):
             SharePointSyncBase.download_file(s, "https://x", target)
         self.assertEqual(target.read_bytes(), b"data")
@@ -275,7 +275,7 @@ class DownloadTest(unittest.TestCase):
         s = FakeSync({"root": []}, self.root)
         ok = self.response(200)
         with mock.patch(
-            "ingestion.sharepoint_sync.requests.get",
+            "sharepoint_sync.requests.get",
             side_effect=[requests.ReadTimeout(), requests.ConnectionError(), ok],
-        ), mock.patch("ingestion.sharepoint_sync.time.sleep"):
+        ), mock.patch("sharepoint_sync.time.sleep"):
             self.assertIs(SharePointSyncBase._get(s, "https://graph/x"), ok)

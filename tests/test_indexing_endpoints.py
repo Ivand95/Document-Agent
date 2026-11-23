@@ -7,13 +7,11 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from ingestion import indexing_runner  # noqa: E402
+import indexing_runner  # noqa: E402
 import main  # noqa: E402
-from rbac_fixtures import FakeRBAC  # noqa: E402
 
 
 class IndexingEndpointsTest(unittest.TestCase):
@@ -22,8 +20,8 @@ class IndexingEndpointsTest(unittest.TestCase):
             running=False, params=None, started_at=None, finished_at=None, result=None
         )
         self.client = TestClient(main.app)
-        self.rbac = FakeRBAC().install(self)
-        self.auth = self.rbac.headers("Tecnología", "dev")  # ingestion admin (seeded mapping)
+        token = main.create_access_token({"department": "IT", "position": "dev"})
+        self.auth = {"Authorization": f"Bearer {token}"}
 
     def env(self, value):
         patcher = mock.patch.dict(os.environ, {"APP_ENV": value} if value else {}, clear=False)

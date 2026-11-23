@@ -199,18 +199,6 @@
   border: 1px solid var(--login-error-border);
 }
 
-/* Pending approval: informative, not an error */
-.login-notice {
-  margin: 8px 0 0;
-  padding: 8px 12px;
-  font-size: 0.8125rem;
-  color: var(--login-text);
-  text-align: center;
-  border-radius: var(--login-radius);
-  background: color-mix(in srgb, var(--login-accent) 12%, transparent);
-  border: 1px solid var(--login-accent);
-}
-
 .login-hint-cooperativa {
   font-weight: 600;
 }
