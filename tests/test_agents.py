@@ -7,15 +7,15 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from langchain_core.documents import Document  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
-import agent  # noqa: E402
-import audio_agent  # noqa: E402
-import config  # noqa: E402
-import llm  # noqa: E402
-import rag  # noqa: E402
+from agents.documents import graph as agent  # noqa: E402
+from agents.audio import graph as audio_agent  # noqa: E402
+from core import llm  # noqa: E402
+from agents.common import rag  # noqa: E402
 
 
 def doc(text, **meta):
@@ -264,12 +264,19 @@ class AudioAgentTest(LLMTestCase):
 
 
 class AudioAccessTest(unittest.TestCase):
+    """Calls: managers ("GR -") by default, plus AUDIO_ALLOWED_DEPARTMENTS while the legacy fallback lasts."""
+
     def check(self, department, position, allowed=None):
+        from rbac import legacy
+        from rbac.model import Access, Subject
+        from rbac_fixtures import seed_policy
+
         env = {} if allowed is None else {"AUDIO_ALLOWED_DEPARTMENTS": allowed}
         with mock.patch.dict(os.environ, env):
             if allowed is None:
                 os.environ.pop("AUDIO_ALLOWED_DEPARTMENTS", None)
-            return config.can_access_audio(department, position)
+            subject = Subject("u", "active", 1, department, position)
+            return Access(subject, seed_policy(), legacy.legacy_role_keys(department)).can("use", "agent", "audio")
 
     def test_default_is_managers_only(self):
         self.assertTrue(self.check("Tecnología", "GR - Director"))

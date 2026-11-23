@@ -5,7 +5,7 @@ import { isAxiosError } from "axios";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { isAdminDepartment } from "../utils/admin";
+import { canAdmin, useMyPermissions } from "../utils/permissions";
 import {
   getIngestionConfig,
   getIngestionReport,
@@ -329,6 +329,7 @@ const ReportSection = ({ token }: { token: string }) => {
 
 export const Admin = ({ userInfo }: { userInfo: UserInfo }) => {
   const navigate = useNavigate();
+  const permissions = useMyPermissions(userInfo.access_token);
 
   return (
     <div className="admin-page">
@@ -340,13 +341,15 @@ export const Admin = ({ userInfo }: { userInfo: UserInfo }) => {
         <ThemeToggle />
       </header>
       <main className="admin-main">
-        {isAdminDepartment(userInfo.department) ? (
+        {permissions === null ? (
+          <CircularProgress size={24} />
+        ) : canAdmin(permissions, "ingestion") ? (
           <>
             <FoldersSection token={userInfo.access_token} />
             <ReportSection token={userInfo.access_token} />
           </>
         ) : (
-          <p className="admin-msg admin-msg--error">Solo disponible para el departamento de Tecnología.</p>
+          <p className="admin-msg admin-msg--error">No tienes permiso para esta sección.</p>
         )}
       </main>
     </div>

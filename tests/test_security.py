@@ -8,14 +8,18 @@ from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from jose import JWTError, jwt  # noqa: E402
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 import main  # noqa: E402
-import security  # noqa: E402
+from api import auth as api_auth, chat  # noqa: E402
+from users import service as users  # noqa: E402
+from core import security  # noqa: E402
 from models.user_profile import UserProfile  # noqa: E402
+from rbac_fixtures import FakeRBAC  # noqa: E402
 
 FRONT = "https://front.example.com"
 STRONG_SECRET = "x" * 40
@@ -174,8 +178,10 @@ class LoginFlowTest(EnvTestCase):
     def test_callback_success_posts_only_to_the_opener_origin_and_state_is_single_use(self):
         state = self.start_login(origin="https://front.example.com")["state"][0]
         profile = UserProfile(id="1", name='Ana </script><b>', email="ana@coop.test", department="IT", position="Analista")
-        with mock.patch.object(main, "exchange_code_for_token", mock.AsyncMock(return_value={"access_token": "ms"})) as ex, \
-             mock.patch.object(main, "get_user_profile", mock.AsyncMock(return_value=profile)):
+        user = users.User(id="11111111-1111-1111-1111-111111111111", status="active", perm_version=1)
+        with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock(return_value={"access_token": "ms"})) as ex, \
+             mock.patch.object(api_auth, "get_user_profile", mock.AsyncMock(return_value=profile)), \
+             mock.patch.object(users, "provision", return_value=user):
             html = self.client.get(f"/auth/callback?code=abc&state={state}").text
             self.assertEqual(ex.call_args.args[0], "abc")
             self.assertTrue(ex.call_args.args[1])  # PKCE verifier
@@ -187,7 +193,7 @@ class LoginFlowTest(EnvTestCase):
 
     def test_callback_does_not_leak_exception_details(self):
         state = self.start_login()["state"][0]
-        with mock.patch.object(main, "exchange_code_for_token", mock.AsyncMock(side_effect=Exception("secret-detail"))):
+        with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock(side_effect=Exception("secret-detail"))):
             html = self.client.get(f"/auth/callback?code=abc&state={state}").text
         self.assertNotIn("secret-detail", html)
         self.assertLoginFailed(html)
@@ -197,8 +203,13 @@ class SessionEndpointsTest(EnvTestCase):
     def setUp(self):
         self.env(APP_ENV="test", JWT_SECRET_KEY=STRONG_SECRET)
         self.client = TestClient(main.app)
-        self.token = security.create_access_token({"sub": "a@b", "department": "IT", "position": "x"})
+        user_id = "11111111-1111-1111-1111-111111111111"
+        self.token = security.create_access_token({"sub": "a@b", "department": "IT", "position": "x", "user_id": user_id})
         self.auth = {"Authorization": f"Bearer {self.token}"}
+        patcher = mock.patch.object(users, "get_user", return_value=users.User(id=user_id, status="active", perm_version=1))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        FakeRBAC().install(self).add_user("IT", "x", user_id=user_id)
 
     def test_refresh_returns_a_working_new_token(self):
         new = self.client.post("/auth/refresh", headers=self.auth).json()["access_token"]
@@ -234,10 +245,11 @@ class WebSocketSecurityTest(EnvTestCase):
         self.unset("FRONTEND_URL")
         self.client = TestClient(main.app)
         self.graph = FakeGraph()
-        patcher = mock.patch.object(main, "get_app_graph", return_value=self.graph)
+        patcher = mock.patch.object(chat, "get_app_graph", return_value=self.graph)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.claims = {"sub": "a@b", "department": "IT", "position": "Analista"}
+        self.rbac = FakeRBAC().install(self)
+        self.claims = self.rbac.claims("IT", "Analista", sub="a@b")
 
     def connect(self, token, **kwargs):
         return self.client.websocket_connect(f"/ws/chat?token={token}", **kwargs)
@@ -259,7 +271,7 @@ class WebSocketSecurityTest(EnvTestCase):
         with self.connect(security.create_access_token(self.claims)) as ws:
             ws.send_json({"message": "a" * (security.MAX_MESSAGE_CHARS + 1)})
             self.assertEqual(ws.receive_json()["type"], "error")
-            ws.send_text("b" * (main.MAX_FRAME_CHARS + 1))
+            ws.send_text("b" * (chat.MAX_FRAME_CHARS + 1))
             self.assertEqual(ws.receive_json()["type"], "error")
         self.assertEqual(self.graph.calls, [])
 
@@ -287,6 +299,11 @@ class WebSocketSecurityTest(EnvTestCase):
     def test_renewal_for_another_user_is_refused(self):
         with self.connect(security.create_access_token(self.claims)) as ws:
             other = security.create_access_token({**self.claims, "sub": "someone@else"})
+            ws.send_json({"type": "auth", "token": other})
+            with self.assertRaises(WebSocketDisconnect):
+                ws.receive_json()
+        with self.connect(security.create_access_token(self.claims)) as ws:
+            other = security.create_access_token({**self.claims, "user_id": self.rbac.add_user("IT", "Analista")})
             ws.send_json({"type": "auth", "token": other})
             with self.assertRaises(WebSocketDisconnect):
                 ws.receive_json()

@@ -6,14 +6,14 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-import ingestion_config  # noqa: E402
+from ingestion import ingestion_config  # noqa: E402
 import main  # noqa: E402
-from config import is_admin_department  # noqa: E402
-from indexing_window import IndexingWindow  # noqa: E402
-from ingestion_control import (  # noqa: E402
+from ingestion.indexing_window import IndexingWindow  # noqa: E402
+from ingestion.ingestion_control import (  # noqa: E402
     LAST_RUN,
     REPORT,
     REPORT_REQUEST,
@@ -21,8 +21,9 @@ from ingestion_control import (  # noqa: E402
     RUN_STATUS,
     IngestionController,
 )
-from ingestion_report import compare  # noqa: E402
-from sharepoint_sync import SharePointSyncBase  # noqa: E402
+from ingestion.ingestion_report import compare  # noqa: E402
+from ingestion.sharepoint_sync import SharePointSyncBase  # noqa: E402
+from rbac_fixtures import FakeRBAC  # noqa: E402
 
 TZ = ZoneInfo("America/Santo_Domingo")
 DAY = datetime(2026, 1, 10, 14, 0, tzinfo=TZ)  # window closed
@@ -161,6 +162,7 @@ class AdminEndpointsTest(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(main.app)
         self.store = FakeStore()
+        self.rbac = FakeRBAC().install(self)
         patches = [
             mock.patch.object(ingestion_config, "get_state", self.store.get_state),
             mock.patch.object(ingestion_config, "set_state", self.store.set_state),
@@ -172,14 +174,21 @@ class AdminEndpointsTest(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def headers(self, department):
-        token = main.create_access_token({"sub": "a@b.c", "department": department, "position": "x"})
-        return {"Authorization": f"Bearer {token}"}
+        return self.rbac.headers(department, "x", sub="a@b.c")
 
     def test_department_check_ignores_accents_and_case(self):
-        self.assertTrue(is_admin_department("Tecnología"))
-        self.assertTrue(is_admin_department("tecnologia "))
-        self.assertFalse(is_admin_department("Comercial"))
-        self.assertFalse(is_admin_department(None))
+        # The seeded mapping Tecnología -> admin, compared without accents or case like the old rule
+        for department, status in (("Tecnología", 200), ("tecnologia ", 200), ("Comercial", 403), ("", 403)):
+            r = self.client.get("/admin/ingestion/report", headers=self.headers(department))
+            self.assertEqual(r.status_code, status, department)
+
+    def test_refusals_are_audited(self):
+        self.client.get("/admin/ingestion/report", headers=self.headers("Comercial"))
+        self.assertEqual(self.rbac.audit[-1][:4], ("access.denied", "admin_area", "ingestion", "denied"))
+
+    def test_changes_are_audited(self):
+        self.client.post("/admin/ingestion/run", json={"mode": "now"}, headers=self.headers("Tecnología"))
+        self.assertEqual(self.rbac.audit[-1][0], "ingestion.run_requested")
 
     def test_other_departments_are_forbidden_on_every_endpoint(self):
         h = self.headers("Comercial")

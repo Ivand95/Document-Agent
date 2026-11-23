@@ -13,7 +13,7 @@ import Markdown from "react-markdown";
 import { useNavigate } from "react-router";
 import remarkGfm from "remark-gfm";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { isAdminDepartment } from "../utils/admin";
+import { canAdmin, useMyPermissions } from "../utils/permissions";
 import {
   audioAgentWebSocket,
   documentAgentWebSocket,
@@ -55,6 +55,9 @@ interface UserInfo {
 }
 
 type AgentId = "document" | "audio";
+
+/** Agent ids as the API names them in /me/permissions */
+const API_AGENT_IDS: Record<AgentId, string> = { document: "documents", audio: "audio" };
 
 interface AgentDef {
   id: AgentId;
@@ -107,10 +110,12 @@ const UserMenu = ({
   userInfo,
   onLogout,
   onOpenAdmin,
+  showAdmin,
 }: {
   userInfo: UserInfo;
   onLogout: () => void;
   onOpenAdmin: () => void;
+  showAdmin: boolean;
 }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -165,7 +170,7 @@ const UserMenu = ({
             </div>
           </div>
           <div className="chat-header-user-info-footer">
-            {isAdminDepartment(userInfo.department) && (
+            {showAdmin && (
               <Button
                 onClick={onOpenAdmin}
                 size="small"
@@ -520,6 +525,12 @@ export const Chat = (props: {
   const wsRef = useRef<WebSocket | null>(null);
   const tokenRef = useRef(props.userInfo.access_token);
   const [agentId, setAgentId] = useState<AgentId>("document");
+  const permissions = useMyPermissions(props.userInfo.access_token);
+  // Only the agents RBAC allows (the documents agent until permissions load); the server checks again
+  const agents = useMemo(
+    () => AGENTS.filter((a) => a.id === "document" || permissions?.agents.includes(API_AGENT_IDS[a.id])),
+    [permissions],
+  );
 
   const currentAgent = useMemo(
     () => AGENTS.find((a) => a.id === agentId) ?? AGENTS[0],
@@ -682,6 +693,7 @@ export const Chat = (props: {
             userInfo={props.userInfo}
             onLogout={handleLogout}
             onOpenAdmin={() => navigate("/admin")}
+            showAdmin={canAdmin(permissions, "ingestion")}
           />
         </div>
       </header>
@@ -761,7 +773,7 @@ export const Chat = (props: {
             />
             <div className="options-container">
               <AgentSelector
-                agents={AGENTS}
+                agents={agents}
                 currentAgentId={agentId}
                 wsConnected={wsConnected}
                 onSelect={handleSelectAgent}

@@ -1,112 +1,41 @@
 import asyncio
 import os
-import uvicorn
-import logging
 import sys
-import json
-import uuid
-
 from contextlib import asynccontextmanager
-from urllib.parse import urlencode
 
-from fastapi.middleware.cors import CORSMiddleware
+# Load .env before the routers import modules that read settings at import time
 from dotenv import load_dotenv
-from fastapi import (
-    FastAPI,
-    Depends,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-    Query,
-)
-from fastapi.responses import HTMLResponse
-from langchain_core.messages import HumanMessage
-from fastapi.security import (
-    HTTPAuthorizationCredentials,
-    HTTPBearer,
-)
-from jose import JWTError
-from datetime import datetime, timezone
-from auth import exchange_code_for_token, get_user_profile, AUTHORITY, CLIENT_ID, LOGIN_SCOPE
-from config import can_access_audio, department_options, is_admin_department
-import ingestion_config
-from indexing_window import IndexingWindow
-from models.ingestion_admin import FoldersRequest, RunRequest
-from sharepoint_sync import normalize_folder
-from db_setup import ensure_database
-from models.chat_request import ChatRequest
-from models.indexing_request import IndexingRequest
-from indexing_runner import (
-    indexing_endpoints_enabled,
-    indexing_status,
-    start_indexing,
-)
-from security import (
-    MAX_MESSAGE_CHARS,
-    consume_login,
-    create_access_token,
-    decode_token,
-    frontend_origins,
-    is_production,
-    new_login,
-    origin_allowed,
-    refresh_token,
-    revoke_token,
-    validate_settings,
-)
 
-log = logging.getLogger("main")
+load_dotenv()
 
-_app_graph = None
-_app_audio_graph = None
+import uvicorn  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
-LOGIN_ERROR = "No se pudo completar el inicio de sesión. Intenta de nuevo."
-INTERNAL_ERROR = "Ocurrió un error interno. Código: {cid}"
-# A JSON frame carries the message plus a few small fields
-MAX_FRAME_CHARS = MAX_MESSAGE_CHARS * 2 + 512
-
-
-def get_app_graph():
-    global _app_graph
-    if _app_graph is None:
-        from agent import app_graph
-
-        _app_graph = app_graph
-    return _app_graph
-
-
-def get_app_audio_graph():
-    global _app_audio_graph
-    if _app_audio_graph is None:
-        from audio_agent import app_audio_graph
-
-        _app_audio_graph = app_audio_graph
-    return _app_audio_graph
-
-
-async def _warm_up_graphs():
-    for loader in (get_app_graph, get_app_audio_graph):
-        try:
-            await asyncio.to_thread(loader)
-        except Exception:
-            log.exception("Could not preload %s; it will load on first use", loader.__name__)
+from api import auth, chat, me  # noqa: E402
+from api.admin import audit as admin_audit  # noqa: E402
+from api.admin import ingestion as admin_ingestion  # noqa: E402
+from api.admin import rbac as admin_rbac  # noqa: E402
+from api.admin import users as admin_users  # noqa: E402
+from core.security import frontend_origins, is_production, validate_settings  # noqa: E402
+from db.db_setup import ensure_database  # noqa: E402
+from integrations.m365 import validate_tenant  # noqa: E402
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Refuses to start in production with an unsafe JWT secret or CORS origin
+    # Refuses to start in production with an unsafe JWT secret, CORS origin or shared M365 tenant
     validate_settings()
+    validate_tenant(is_production())
     # Creates the search tables/functions if SUPABASE_DB_URL is set, and logs anything still missing
     await asyncio.to_thread(ensure_database)
     # Importing the agents (LangGraph, clients) takes seconds: do it now, not on the first question
-    warm_up = asyncio.create_task(_warm_up_graphs())
+    warm_up = asyncio.create_task(chat.warm_up_graphs())
     yield
     warm_up.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
-load_dotenv()
 
 
 @app.get("/health")
@@ -119,466 +48,25 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=frontend_origins() or ["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
-REDIRECT_URI = os.getenv("AUTH_REDIRECT_URI", "http://localhost:8000")
-oauth2_scheme = HTTPBearer()
-
-
-def get_current_user_claims(
-    credentials: HTTPAuthorizationCredentials = Depends(oauth2_scheme),
-):
-    """
-    Decodes the JWT and returns its claims (department and position are required).
-    Middleware-like dependency for protected routes.
-    """
-    try:
-        payload = decode_token(credentials.credentials)
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Could not validate credentials")
-    if payload.get("department") is None:
-        raise HTTPException(status_code=401, detail="Token missing department scope")
-    return payload
-
-
-def get_current_user_dept(claims: dict = Depends(get_current_user_claims)):
-    return claims["department"]
-
-
-# --- Auth Endpoints ---
-
-
-@app.get("/login")
-def login(request: Request):
-    """Generates the Microsoft Login URL (with `state` and PKCE)."""
-    origin = request.headers.get("origin")
-    if not origin_allowed(origin):
-        raise HTTPException(status_code=403, detail="Origin not allowed")
-    state, challenge = new_login(origin)
-    query = urlencode(
-        {
-            "client_id": CLIENT_ID,
-            "response_type": "code",
-            "redirect_uri": f"{REDIRECT_URI}/auth/callback",
-            "response_mode": "query",
-            "scope": LOGIN_SCOPE,
-            "state": state,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-        }
-    )
-    return {"login_url": f"{AUTHORITY}/oauth2/v2.0/authorize?{query}"}
-
-
-def callback_page(payload: dict, target_origin: str) -> str:
-    """Page that hands the result to the window that opened the login popup."""
-    # `<` is escaped so a value like "</script>" can't end the script block
-    data = json.dumps(payload).replace("<", "\\u003c")
-    target = json.dumps(target_origin).replace("<", "\\u003c")
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head><title>Autenticación completada</title></head>
-    <body>
-        <p>Autenticación completada. Esta ventana se cerrará automáticamente.</p>
-        <script>
-            if (window.opener) {{
-                window.opener.postMessage({data}, {target});
-            }}
-            window.close();
-        </script>
-    </body>
-    </html>
-    """
-
-
-@app.get("/auth/callback", response_class=HTMLResponse)
-async def auth_callback(
-    code: str | None = None, state: str | None = None, error: str | None = None
-):
-    """
-    1. Checks `state` (one-time) and recovers the PKCE verifier
-    2. Exchange code for MS Graph Token
-    3. Get User Profile (Department)
-    4. Mint internal JWT with department
-    5. Return HTML that sends data to the opener window (only to the origin that started the login)
-    """
-    verifier, opener = consume_login(state)
-    target = opener or "*"
-    failure = {"type": "ms-auth-callback", "error": LOGIN_ERROR}
-
-    if verifier is None or error or not code:
-        log.warning("Login rejected: unknown or expired state, or the identity provider returned an error")
-        return callback_page(failure, target)
-
-    try:
-        ms_token_data = await exchange_code_for_token(code, verifier)
-        user_profile = await get_user_profile(ms_token_data.get("access_token"))
-
-        session_token = create_access_token(
-            {
-                "sub": user_profile.email,
-                "name": user_profile.name,
-                "department": user_profile.department,
-                "position": user_profile.position,
-            }
-        )
-        payload = {
-            "type": "ms-auth-callback",
-            "access_token": session_token,
-            "name": user_profile.name,
-            "email": user_profile.email,
-            "department": user_profile.department,
-            "position": user_profile.position,
-        }
-    except Exception:
-        log.exception("Login failed")  # details stay in the server log
-        payload = failure
-
-    return callback_page(payload, target)
-
-
-@app.post("/auth/refresh")
-async def auth_refresh(claims: dict = Depends(get_current_user_claims)):
-    """New short-lived token for the same session (it can't outlive SESSION_MAX_HOURS)."""
-    try:
-        return {"access_token": refresh_token(claims)}
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Session expired")
-
-
-@app.post("/auth/logout")
-async def auth_logout(claims: dict = Depends(get_current_user_claims)):
-    """Invalidates the current token (open WebSockets stop answering with it)."""
-    revoke_token(claims)
-    return {"status": "ok"}
-
-
-@app.post("/chat")
-async def chat_endpoint(
-    request: ChatRequest, claims: dict = Depends(get_current_user_claims)
-):
-    """
-    Authorized, stateless endpoint (use the WebSocket for conversations).
-    1. Validates JWT.
-    2. Extracts Department and Position.
-    3. Runs Agent with Department Filter.
-    """
-    department = claims["department"]
-    log.info("Chat request from department '%s' (%d chars)", department, len(request.message))
-
-    inputs = {
-        "messages": [HumanMessage(content=request.message)],
-        "user_department": department,  # Security context injection
-        "position": claims.get("position") or "",
-    }
-    # The graph has a checkpointer, so every call needs a thread id; a fresh one keeps this stateless
-    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
-
-    result = await get_app_graph().ainvoke(inputs, config=config)
-
-    return {"response": result["answer"], "department_context_used": department}
-
-
-# --- WebSocket chat (documents and audio share the same protocol) ---
-
-
-def parse_frame(data: str) -> dict:
-    """JSON frames are dicts; anything else is a plain-text message."""
-    try:
-        parsed = json.loads(data)
-    except json.JSONDecodeError:
-        return {"message": data}
-    return parsed if isinstance(parsed, dict) else {"message": data}
-
-
-async def send_error(websocket: WebSocket, content: str):
-    await websocket.send_text(json.dumps({"type": "error", "content": content}))
-
-
-async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
-    """
-    Client connects to: ws://host/ws/chat?token=YOUR_JWT_HERE (or /ws/chat/audio).
-    The token is checked on connect and again before every message (expiry, revocation).
-    A client renews it without reconnecting by sending {"type": "auth", "token": "<new token>"}.
-    """
-    if not origin_allowed(websocket.headers.get("origin")):
-        await websocket.close(code=1008, reason="Origin not allowed")
-        return
-
-    try:
-        claims = decode_token(token)
-    except JWTError:
-        await websocket.close(code=1008, reason="Could not validate credentials")
-        return
-    department, position = claims.get("department"), claims.get("position")
-    if department is None or position is None:
-        await websocket.close(code=1008, reason="Token missing department or position scope")
-        return
-
-    # Call recordings are sensitive: only managers and explicitly allowed departments
-    if audio and not can_access_audio(department, position):
-        await websocket.close(code=1008, reason="Not authorized for audio conversations")
-        return
-
-    await websocket.accept()
-    # Each connection is its own conversation: LangGraph keeps its state under this id
-    session_id = str(uuid.uuid4())
-    log.info("WS accepted for department '%s' (session %s, audio=%s)", department, session_id, audio)
-
-    try:
-        while True:
-            data = await websocket.receive_text()
-            cid = uuid.uuid4().hex[:8]  # lets a user report an error without exposing details
-
-            if len(data) > MAX_FRAME_CHARS:
-                await send_error(websocket, f"El mensaje es demasiado largo (máximo {MAX_MESSAGE_CHARS} caracteres).")
-                continue
-
-            frame = parse_frame(data)
-
-            # Expired or revoked tokens end the conversation
-            try:
-                claims = decode_token(token)
-            except JWTError:
-                if frame.get("type") != "auth":
-                    await send_error(websocket, "Tu sesión expiró. Inicia sesión de nuevo.")
-                    await websocket.close(code=1008)
-                    return
-
-            if frame.get("type") == "auth":
-                try:
-                    renewed = decode_token(str(frame.get("token", "")))
-                except JWTError:
-                    await send_error(websocket, "Tu sesión expiró. Inicia sesión de nuevo.")
-                    await websocket.close(code=1008)
-                    return
-                same_user = renewed.get("sub") == claims.get("sub")
-                if not same_user or renewed.get("department") is None or renewed.get("position") is None:
-                    await websocket.close(code=1008, reason="Could not validate credentials")
-                    return
-                token, claims = frame["token"], renewed
-                department, position = renewed["department"], renewed["position"]
-                if audio and not can_access_audio(department, position):
-                    await websocket.close(code=1008, reason="Not authorized for audio conversations")
-                    return
-                continue
-
-            user_message = frame.get("message")
-            if not isinstance(user_message, str) or not user_message.strip():
-                await send_error(websocket, "Mensaje vacío.")
-                continue
-            if len(user_message) > MAX_MESSAGE_CHARS:
-                await send_error(websocket, f"El mensaje es demasiado largo (máximo {MAX_MESSAGE_CHARS} caracteres).")
-                continue
-
-            # The question itself is not logged: it can contain member data
-            log.info("[%s] question from department '%s' (%d chars)", cid, department, len(user_message))
-
-            inputs = {
-                "messages": [HumanMessage(content=user_message)],
-                "user_department": department,
-                "position": position,
-            }
-            config = {"configurable": {"thread_id": session_id}}
-
-            try:
-                result = await get_graph().ainvoke(inputs, config=config)
-            except Exception:
-                log.exception("[%s] agent failed", cid)
-                await send_error(websocket, INTERNAL_ERROR.format(cid=cid))
-                continue
-
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "answer",
-                        "content": result.get("answer", "No answer could be generated."),
-                        "department_context": department,
-                        "position_context": position,
-                        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-                    }
-                )
-            )
-
-    except WebSocketDisconnect:
-        log.info("Client from department '%s' disconnected (session %s)", department, session_id)
-    except Exception:
-        log.exception("Unexpected WebSocket error (session %s)", session_id)
-        try:
-            await send_error(websocket, INTERNAL_ERROR.format(cid=session_id[:8]))
-        except RuntimeError:
-            pass  # the client is already gone
-        finally:
-            await websocket.close(code=1011)
-
-
-@app.websocket("/ws/chat")
-async def websocket_chat(websocket: WebSocket, token: str = Query(...)):
-    await chat_socket(websocket, token, get_app_graph, audio=False)
-
-
-@app.websocket("/ws/chat/audio")
-async def websocket_chat_audio(websocket: WebSocket, token: str = Query(...)):
-    await chat_socket(websocket, token, get_app_audio_graph, audio=True)
-
-
-# --- Manual indexing (non-production only) ---
-
-
-def require_non_production():
-    """Blocks the endpoint unless APP_ENV is a development environment."""
-    if not indexing_endpoints_enabled():
-        raise HTTPException(
-            status_code=403,
-            detail="Indexing endpoints are disabled in production.",
-        )
-
-
-@app.post(
-    "/admin/indexing/run",
-    status_code=202,
-    dependencies=[Depends(require_non_production)],
-)
-async def run_indexing_endpoint(
-    request: IndexingRequest,
-    department: str = Depends(get_current_user_dept),
-):
-    """
-    Starts a SharePoint -> Supabase indexing run in the background.
-    Only available when APP_ENV is development/dev/local/test.
-    Poll GET /admin/indexing/status for the result.
-    """
-    params = {
-        "target": request.target,
-        "force": request.full,
-        "limit": request.limit,
-        "docs_folder": request.docs_folder,
-        "audio_folder": request.audio_folder,
-    }
-    print(f"Indexing run requested by department '{department}': {params}")
-    if not start_indexing(params):
-        raise HTTPException(status_code=409, detail="An indexing run is already in progress.")
-    return {"status": "started", "params": params}
-
-
-@app.get(
-    "/admin/indexing/status",
-    dependencies=[Depends(require_non_production)],
-)
-async def indexing_status_endpoint(
-    department: str = Depends(get_current_user_dept),
-):
-    """Current or last manual indexing run."""
-    return indexing_status()
-
-
-# --- Ingestion panel (Tecnología only) ---
-
-
-def require_admin(claims: dict = Depends(get_current_user_claims)):
-    """The configuration panel is only for the departments in ADMIN_DEPARTMENTS (default Tecnología)."""
-    if not is_admin_department(claims.get("department")):
-        raise HTTPException(status_code=403, detail="Solo disponible para el departamento de Tecnología.")
-    return claims
-
-
-def window_info() -> dict:
-    window = IndexingWindow.from_env()
-    return {
-        "start": window.start.strftime("%H:%M"),
-        "end": window.end.strftime("%H:%M"),
-        "tz": str(window.tz),
-        "open_now": window.is_open(),
-    }
-
-
-@app.get("/admin/ingestion/config")
-def ingestion_config_endpoint(_claims: dict = Depends(require_admin)):
-    """Audio root folder (from .env), its subfolders and the selection saved from the panel."""
-    saved = ingestion_config.load_folders()
-    found = set((ingestion_config.get_state(ingestion_config.REPORT) or {}).get("audio_folders", []))
-    folders = [
-        {
-            "name": name,
-            "enabled": saved.get(name, {}).get("enabled", False),
-            "department": saved.get(name, {}).get("department"),
-            "found": name in found,  # False: saved earlier but no longer in SharePoint
-        }
-        for name in sorted(found | saved.keys(), key=lambda n: (not n.isdigit(), int(n) if n.isdigit() else 0, n))
-    ]
-    return {
-        "audio_root": normalize_folder(os.getenv("OFFICE_365_CONVERSATION_FOLDER_PATH", "3CX Recordings")),
-        "configured": bool(saved),  # until the first save every folder is ingested
-        "folders": folders,
-        "departments": department_options(),
-        "window": window_info(),
-    }
-
-
-@app.post("/admin/ingestion/folders")
-def save_ingestion_folders(request: FoldersRequest, claims: dict = Depends(require_admin)):
-    """Saves which folders are ingested and their department (stored in each call's metadata)."""
-    try:
-        relabeled = ingestion_config.save_folders(
-            [f.model_dump() for f in request.folders], claims.get("email") or claims.get("sub") or "?"
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    log.info("Ingestion folders saved (%d folders, %d relabeled)", len(request.folders), len(relabeled))
-    return {"saved": len(request.folders), "relabeled": relabeled}
-
-
-@app.get("/admin/ingestion/report")
-def ingestion_report_endpoint(_claims: dict = Depends(require_admin)):
-    """Latest pending-files report plus the state of the indexer."""
-    get = ingestion_config.get_state
-    return {
-        "report": get(ingestion_config.REPORT),
-        "status": get(ingestion_config.RUN_STATUS),
-        "last_run": get(ingestion_config.LAST_RUN),
-        "run_request": get(ingestion_config.RUN_REQUEST),
-        "report_requested": bool(get(ingestion_config.REPORT_REQUEST)),
-        "window": window_info(),
-    }
-
-
-@app.post("/admin/ingestion/report/refresh", status_code=202)
-def refresh_ingestion_report(claims: dict = Depends(require_admin)):
-    """Asks the indexer for a fresh report (it lists SharePoint, so it can take a minute)."""
-    ingestion_config.set_state(ingestion_config.REPORT_REQUEST, {"by": claims.get("sub")})
-    return {"status": "requested"}
-
-
-@app.post("/admin/ingestion/run", status_code=202)
-def request_ingestion_run(request: RunRequest, claims: dict = Depends(require_admin)):
-    """now: the indexer loads the pending files at its next check, ignoring the window.
-    night: cancels a pending "now" request; files are loaded in the nightly window."""
-    if request.mode == "now":
-        status = ingestion_config.get_state(ingestion_config.RUN_STATUS) or {}
-        if status.get("running"):
-            raise HTTPException(status_code=409, detail="Ya hay una carga en curso.")
-        ingestion_config.set_state(
-            ingestion_config.RUN_REQUEST,
-            {"mode": "now", "by": claims.get("sub"), "at": datetime.now(timezone.utc).isoformat()},
-        )
-        log.info("Ingestion run requested for now by '%s'", claims.get("department"))
-    else:
-        ingestion_config.clear_state(ingestion_config.RUN_REQUEST)
-    return {"mode": request.mode}
+app.include_router(auth.router)
+app.include_router(chat.router)
+app.include_router(admin_ingestion.router)
+app.include_router(admin_users.router)
+app.include_router(admin_rbac.router)
+app.include_router(admin_audit.router)
+app.include_router(me.router)
 
 
 if __name__ == "__main__":
-    # logging.info("Starting Uvicorn server on 0.0.0.0:8000")
     print("Starting Uvicorn server on 0.0.0.0:8000")
     try:
         uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
     except KeyboardInterrupt:
-        # logging.log_shutdown("Keyboard interrupt received")
         print("Keyboard interrupt received")
     except Exception as e:
-        # logging.critical(f"Failed to start server: {str(e)}", exc_info=True)
         print(f"Failed to start server: {str(e)}")
         sys.exit(1)
