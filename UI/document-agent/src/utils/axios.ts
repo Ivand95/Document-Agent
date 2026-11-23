@@ -43,6 +43,7 @@ export interface MyPermissions {
   agents: string[];
   admin_areas: string[];
   doc_categories: string[];
+  capabilities: string[];
 }
 
 export const getMyPermissions = (token: string) =>

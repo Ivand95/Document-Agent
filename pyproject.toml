@@ -5,9 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "cryptography>=46.0.3",
     "docling[asr,audio]>=2.91.0",
     "fastapi>=0.124.4",
     "google-generativeai>=0.8.5",
+    "jsonschema>=4.26.0",
     "langchain>=1.2.0",
     "langchain-community>=0.4.1",
     "langchain-openai>=1.1.3",

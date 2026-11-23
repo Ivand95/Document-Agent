@@ -469,9 +469,11 @@ name = "coop-document-agent"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "docling", extra = ["asr"] },
     { name = "fastapi" },
     { name = "google-generativeai" },
+    { name = "jsonschema" },
     { name = "langchain" },
     { name = "langchain-community" },
     { name = "langchain-openai" },
@@ -493,9 +495,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=46.0.3" },
     { name = "docling", extras = ["asr", "audio"], specifier = ">=2.91.0" },
     { name = "fastapi", specifier = ">=0.124.4" },
     { name = "google-generativeai", specifier = ">=0.8.5" },
+    { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "langchain", specifier = ">=1.2.0" },
     { name = "langchain-community", specifier = ">=0.4.1" },
     { name = "langchain-openai", specifier = ">=1.1.3" },

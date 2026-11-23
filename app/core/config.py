@@ -17,7 +17,17 @@ SUPABASE_SCHEMA = os.getenv("SUPABASE_SCHEMA", "documents_rag")
 SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "chunks")
 SUPABASE_AUDIO_TABLE = os.getenv("SUPABASE_AUDIO_TABLE", "audio_chunks")
 
-# Models are configurable so they can be upgraded without code changes
+# Embeddings are set apart from chat: changing them means re-indexing everything (the vectors in pgvector
+# come from this model, and their size is fixed in db_setup.EMBEDDING_DIM). OpenRouter can't serve them.
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", LLM_SERVICE).lower()
+EMBEDDING_MODEL = os.getenv(
+    "EMBEDDING_MODEL", "models/embedding-001" if EMBEDDING_PROVIDER == "gemini" else "text-embedding-3-small"
+)
+if EMBEDDING_PROVIDER not in ("openai", "gemini"):
+    raise ValueError(f"EMBEDDING_PROVIDER must be openai or gemini, not '{EMBEDDING_PROVIDER}'")
+
+# Models are configurable so they can be upgraded without code changes.
+# The core agents only use OpenAI models (core/llm.py refuses others).
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o")  # final answers
 LIGHT_MODEL = os.getenv("LIGHT_MODEL", "gpt-4o-mini")  # query rewriting, reranking, call analysis
 
@@ -51,7 +61,8 @@ EMBED_BATCH_SIZE = 64
 # --- Helper: Embedding Generator Factory (from your initial script) ---
 class EmbeddingService:
     def __init__(self):
-        self.service = LLM_SERVICE
+        self.service = EMBEDDING_PROVIDER
+        self.model = EMBEDDING_MODEL
         self.api_key = LLM_API_KEY
 
         if self.service == "openai":
@@ -63,19 +74,17 @@ class EmbeddingService:
         text = text.replace("\n", " ")
         try:
             if self.service == "openai":
-                response = self.client.embeddings.create(
-                    input=[text], model="text-embedding-3-small"
-                )
+                response = self.client.embeddings.create(input=[text], model=self.model)
                 return response.data[0].embedding
             elif self.service == "gemini":
                 result = genai.embed_content(
-                    model="models/embedding-001",
+                    model=self.model,
                     content=text,
                     task_type="retrieval_query",
                 )
                 return result["embedding"]
             else:
-                raise ValueError("Unsupported LLM_SERVICE")
+                raise ValueError("Unsupported EMBEDDING_PROVIDER")
         except Exception as e:
             print(f"Error generating embedding: {e}")
             return None
@@ -92,20 +101,18 @@ class EmbeddingService:
             batch = [t.replace("\n", " ") for t in texts[i : i + EMBED_BATCH_SIZE]]
             try:
                 if self.service == "openai":
-                    response = self.client.embeddings.create(
-                        input=batch, model="text-embedding-3-small"
-                    )
+                    response = self.client.embeddings.create(input=batch, model=self.model)
                     ordered = sorted(response.data, key=lambda d: d.index)
                     vectors.extend(d.embedding for d in ordered)
                 elif self.service == "gemini":
                     result = genai.embed_content(
-                        model="models/embedding-001",
+                        model=self.model,
                         content=batch,
                         task_type="retrieval_document",
                     )
                     vectors.extend(result["embedding"])
                 else:
-                    raise ValueError("Unsupported LLM_SERVICE")
+                    raise ValueError("Unsupported EMBEDDING_PROVIDER")
             except Exception as e:
                 print(f"Error generating embeddings: {e}")
                 return None

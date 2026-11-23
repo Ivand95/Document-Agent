@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -14,12 +15,16 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from api import auth, chat, me  # noqa: E402
 from api.admin import audit as admin_audit  # noqa: E402
+from api.admin import capabilities as admin_capabilities  # noqa: E402
 from api.admin import ingestion as admin_ingestion  # noqa: E402
 from api.admin import rbac as admin_rbac  # noqa: E402
 from api.admin import users as admin_users  # noqa: E402
+from capabilities.registry import sync_native_tools  # noqa: E402
 from core.security import frontend_origins, is_production, validate_settings  # noqa: E402
 from db.db_setup import ensure_database  # noqa: E402
 from integrations.m365 import validate_tenant  # noqa: E402
+
+log = logging.getLogger("main")
 
 
 @asynccontextmanager
@@ -29,10 +34,19 @@ async def lifespan(_app: FastAPI):
     validate_tenant(is_production())
     # Creates the search tables/functions if SUPABASE_DB_URL is set, and logs anything still missing
     await asyncio.to_thread(ensure_database)
+    # Native tools in the code are copied into the registry (new ones disabled)
+    await asyncio.to_thread(sync_native_tools_safely)
     # Importing the agents (LangGraph, clients) takes seconds: do it now, not on the first question
     warm_up = asyncio.create_task(chat.warm_up_graphs())
     yield
     warm_up.cancel()
+
+
+def sync_native_tools_safely():
+    try:
+        sync_native_tools()
+    except Exception:
+        log.exception("Could not sync the native tools into the capability registry")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -58,6 +72,7 @@ app.include_router(admin_ingestion.router)
 app.include_router(admin_users.router)
 app.include_router(admin_rbac.router)
 app.include_router(admin_audit.router)
+app.include_router(admin_capabilities.router)
 app.include_router(me.router)
 
 

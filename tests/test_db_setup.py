@@ -480,10 +480,65 @@ class PostgresIntegrationTest(unittest.TestCase):
         with self.connect() as c:
             for role in ("anon", "authenticated"):
                 c.execute(f"set role {role}")
-                for table in ("roles", "user_roles", "role_mappings", "permissions", "audit_log"):
+                for table in ("roles", "user_roles", "role_mappings", "permissions", "audit_log",
+                              "capabilities", "capability_operations", "connections"):
                     with self.assertRaises(psycopg.errors.InsufficientPrivilege, msg=(role, table)):
                         c.execute(f"select 1 from {self.schema}.{table}")
                 c.execute("reset role")
+
+    # --- Capability registry (0006) ---
+    def test_capability_registry_rules(self):
+        import psycopg
+
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            c.execute("set role service_role")
+            user_id = self.upsert(c)[0]
+            q = lambda sql, *a: c.execute(sql.replace("@@", self.schema + "."), a).fetchall()  # noqa: E731
+            version = lambda: q("select perm_version from @@users where id = %s", user_id)[0][0]  # noqa: E731
+
+            # The admin role manages the registry
+            self.assertEqual(q("select count(*) from @@permissions p join @@roles r on r.id = p.subject_id "
+                               "where r.key = 'admin' and p.resource_type = 'admin_area' "
+                               "and p.resource_id = 'capabilities' and p.action = 'admin'")[0][0], 1)
+
+            cap = q("insert into @@capabilities (key, kind, name) values ('ads', 'mcp', 'Ads') "
+                    "returning id, enabled, data_class, risk")[0]
+            self.assertEqual(cap[1:], (False, "sensitive", "read"))  # everything new starts closed
+            q("insert into @@capability_operations (capability_id, operation) values (%s, 'get_insights') "
+              "returning enabled, read_only", cap[0])
+            self.assertEqual(q("select enabled, read_only from @@capability_operations")[0], (False, False))
+            conn_id = q("insert into @@connections (capability_id, name, auth_type) values (%s, 'main', 'token') "
+                        "returning id", cap[0])[0][0]
+            q("insert into @@connections (capability_id, name, auth_type) values (null, 'openrouter', 'token') "
+              "returning id")
+            for sql in ("insert into @@connections (capability_id, name, auth_type) values (null, 'openrouter', 'token')",
+                        "insert into @@connections (capability_id, name, auth_type) values ('%s', 'main', 'token')"
+                        % cap[0],
+                        "insert into @@capabilities (key, kind, name) values ('ads', 'cli', 'x')"):
+                with self.assertRaises(psycopg.errors.UniqueViolation, msg=sql):
+                    with c.transaction():
+                        q(sql + " returning 1")
+            for sql in ("insert into @@capabilities (key, kind, name) values ('Bad Key', 'mcp', 'x')",
+                        "insert into @@capabilities (key, kind, name) values ('okkey', 'plugin', 'x')",
+                        "insert into @@capabilities (key, kind, name, config) values ('okkey', 'mcp', 'x', '[]')",
+                        "insert into @@capability_operations (capability_id, operation) values ('%s', 'bad op')"
+                        % cap[0],
+                        "update @@connections set status = 'great'",
+                        "update @@capabilities set key = 'renamed'"):
+                with self.assertRaises(psycopg.errors.CheckViolation, msg=sql):
+                    with c.transaction():
+                        q(sql + " returning 1")
+
+            q("insert into @@permissions (subject_type, subject_id, resource_type, resource_id, action) "
+              "values ('user', %s, 'capability', 'ads', 'use') returning 1", user_id)
+            self.assertEqual(version(), 2)
+            q("delete from @@capabilities where id = %s returning 1", cap[0])
+            for table in ("capability_operations", "connections where capability_id is not null", "permissions "
+                          "where resource_type = 'capability' and resource_id = 'ads'"):
+                self.assertEqual(q(f"select count(*) from @@{table}")[0][0], 0, table)
+            self.assertEqual(version(), 3)  # the dropped grant bumps the user's version
+            self.assertEqual(q("select count(*) from @@connections where id = %s", conn_id)[0][0], 0)
 
 
 if __name__ == "__main__":

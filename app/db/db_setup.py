@@ -39,6 +39,7 @@ REVOKE_ROLES = ("anon", "authenticated")
 APP_TABLES = (
     "ingestion_folders", "ingestion_state", "users",
     "roles", "user_roles", "role_mappings", "permissions", "audit_log",
+    "capabilities", "capability_operations", "connections",
 )
 
 
@@ -231,6 +232,8 @@ def check_search_ready(client=global_supabase_client):
         f"table {SUPABASE_SCHEMA}.users": lambda: schema.table("users").select("id").limit(1).execute(),
         # Every API call checks permissions here: without it nobody can use the agents
         f"table {SUPABASE_SCHEMA}.permissions": lambda: schema.table("permissions").select("id").limit(1).execute(),
+        # Tools, MCP servers and CLIs the agents may call
+        f"table {SUPABASE_SCHEMA}.capabilities": lambda: schema.table("capabilities").select("id").limit(1).execute(),
     }
     problems = []
     for what, call in checks.items():

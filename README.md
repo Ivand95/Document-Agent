@@ -27,13 +27,15 @@ import each other as `from core.config import ...`.
 ```
 app/
   main.py         FastAPI app: lifespan, middleware, routers
-  api/            routers: auth, chat (HTTP + WebSocket), me, admin/{ingestion,users,rbac,audit};
+  api/            routers: auth, chat (HTTP + WebSocket), me, admin/{ingestion,users,rbac,audit,capabilities};
                   deps.py holds the auth and permission dependencies (require(action, type, id))
   core/           config, security (JWT, sessions), llm, prompt_safety
   agents/         common/rag.py, documents/graph.py, audio/graph.py (LangGraph pipelines)
   integrations/   m365.py (Microsoft login and Graph profile)
   users/          users registered by their Microsoft 365 login
   rbac/           roles, permissions and audit log: evaluation (model.py), data (service.py), bootstrap CLI
+  capabilities/   registry of tools, MCP servers and CLIs (registry.py), the gateway every call goes through
+                  (gateway.py), encrypted connection secrets, native tools shipped in capabilities/tools/
   ingestion/      SharePoint sync, document and audio indexers, ingestion panel state, nightly window
   db/             db_setup.py and SQL migrations
   models/         pydantic request/response schemas
@@ -65,6 +67,22 @@ Deny by default; an explicit deny beats an allow; a user's own permissions overr
 ```bash
 $ PYTHONPATH=app uv run python -m rbac.cli grant-super-admin persona@cooperativa.com  # after their first login
 $ PYTHONPATH=app uv run python -m rbac.cli effective persona@cooperativa.com          # why they can/can't
+```
+
+## Capabilities (tools, MCP servers, CLIs)
+
+Everything an agent can call is registered in `capabilities` (migration 0006) and managed from
+`/admin/capabilities` (admin area `capabilities`, held by the `admin` role). A call runs only if the
+capability is enabled, the user has `use` on it in the permission matrix (resource type `capability`), the
+operation is on its whitelist and enabled, it is marked read-only, and its arguments match the schema.
+Everything new starts disabled. Native tools are Python modules in `app/capabilities/tools/` (or packages
+with a `coop_agent.tools` entry point) and are copied into the registry at start-up. Secrets are encrypted
+with `CAPABILITY_SECRET_KEY` and never returned by the API.
+
+```bash
+$ PYTHONPATH=app uv run python -m capabilities.cli generate-key   # value for CAPABILITY_SECRET_KEY
+$ PYTHONPATH=app uv run python -m capabilities.cli list
+$ PYTHONPATH=app uv run python -m capabilities.cli rotate-secrets # after putting a new key first
 ```
 
 ## Running Agent in the console:

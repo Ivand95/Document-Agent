@@ -75,6 +75,9 @@ def validate_settings():
     origins = frontend_origins()
     if not origins or "*" in origins:
         problems.append("FRONTEND_URL must list the exact frontend origin(s), not be empty or '*'")
+    from capabilities.secrets import setting_problems
+
+    problems.extend(setting_problems())
     if problems:
         raise RuntimeError("Unsafe production configuration: " + "; ".join(problems))
 

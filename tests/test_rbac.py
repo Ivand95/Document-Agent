@@ -19,7 +19,7 @@ from rbac_fixtures import FakeRBAC, role_id, rule, seed_data, seed_policy  # noq
 
 POSITIONS = (None, "", "Analista", "GR - Director", "gr - director", " GR - Director", "GR-Director", "Director GR - ")
 DEPARTMENTS = (*DEPARTMENT_LIST, None, "", " ", "Desconocido", "General")
-ADMIN_AREAS_OF_ADMIN = ["ingestion", "users", "rbac", "audit"]
+ADMIN_AREAS_OF_ADMIN = ["ingestion", "users", "rbac", "audit", "capabilities"]  # 0005 + 0006
 
 
 def access(department="Tecnología", position="Analista", status="active", roles=(), rules=(), policy=None,
@@ -332,10 +332,16 @@ class LoaderTest(unittest.TestCase):
 
 class CatalogTest(unittest.TestCase):
     def test_validation(self):
+        rbac = FakeRBAC().install(self)
+        rbac.db.tables["capabilities"] = [{"id": str(uuid.uuid4()), "key": "sql_query", "kind": "tool", "name": "SQL"}]
         catalog.validate_resource("agent", "documents")
         catalog.validate_resource("doc_category", "*")
-        catalog.validate_resource("capability", "anything-registered-later")
-        for rtype, rid in (("agent", "nope"), ("doc_category", "XX"), ("weird", "x"), ("model", ""), ("model", "x" * 201)):
+        catalog.validate_resource("capability", "sql_query")
+        catalog.validate_resource("capability", "*")
+        catalog.validate_resource("model", "anything-registered-later")  # models aren't checked yet (WP4b)
+        self.assertIn({"id": "sql_query", "label": "SQL"}, catalog.catalog()["resources"]["capability"])
+        for rtype, rid in (("agent", "nope"), ("doc_category", "XX"), ("weird", "x"), ("model", ""), ("model", "x" * 201),
+                           ("capability", "not_registered")):
             with self.assertRaises(ValueError):
                 catalog.validate_resource(rtype, rid)
 
