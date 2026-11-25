@@ -1,8 +1,8 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import Close from "@mui/icons-material/Close";
 import Menu from "@mui/icons-material/Menu";
-import { Button, CircularProgress, IconButton } from "@mui/material";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Button, CircularProgress, Drawer, IconButton, useMediaQuery } from "@mui/material";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { listUsers, type UsersScope } from "../utils/api/users";
@@ -24,6 +24,9 @@ export const AdminLayout = ({ userInfo }: { userInfo: UserInfo }) => {
   const [summary, setSummary] = useState<UsersSummary | null>(null);
   const [summaryKey, setSummaryKey] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  const isMobile = useMediaQuery("(max-width:767px)");
+  // Derived, so the drawer closes by itself if the viewport grows to desktop
+  const drawerOpen = isMobile && menuOpen;
   const refreshSummary = useCallback(() => setSummaryKey((key) => key + 1), []);
 
   const canUsers = !!permissions?.admin_areas.includes("users");
@@ -46,6 +49,12 @@ export const AdminLayout = ({ userInfo }: { userInfo: UserInfo }) => {
 
   const usersSummary = canUsers ? summary : null;
   const groups = permissions ? visibleGroups(permissions.admin_areas) : [];
+  const usersScope = usersSummary?.scope ?? null;
+
+  const context = useMemo<AdminContext | null>(
+    () => (permissions ? { token, permissions, usersScope, refreshSummary } : null),
+    [token, permissions, usersScope, refreshSummary],
+  );
 
   let content;
   if (permissions === null) {
@@ -73,12 +82,6 @@ export const AdminLayout = ({ userInfo }: { userInfo: UserInfo }) => {
       </section>
     );
   } else {
-    const context: AdminContext = {
-      token,
-      permissions,
-      usersScope: usersSummary?.scope ?? null,
-      refreshSummary,
-    };
     content = (
       <Suspense
         fallback={
@@ -92,22 +95,42 @@ export const AdminLayout = ({ userInfo }: { userInfo: UserInfo }) => {
     );
   }
 
+  const navContent = groups.map((group) => (
+    <div key={group.id} className="admin-nav-group">
+      <p className="admin-nav-group-label">{group.label}</p>
+      {group.areas.map((area) => (
+        <NavLink
+          key={area.id}
+          to={`/admin/${area.path}`}
+          className={({ isActive }) => `admin-nav-link${isActive ? " admin-nav-link--active" : ""}`}
+          onClick={() => setMenuOpen(false)}
+        >
+          <span>{area.label}</span>
+          {area.id === "users" && !!usersSummary?.pending && (
+            <span className="admin-nav-badge" aria-label={`${usersSummary.pending} pendientes`}>
+              {usersSummary.pending}
+            </span>
+          )}
+        </NavLink>
+      ))}
+    </div>
+  ));
+
   const showNav = groups.length > 0;
 
   return (
     <div className="admin-page">
       <header className="admin-header">
         <div className="admin-header-start">
-          {showNav && (
+          {showNav && isMobile && (
             <IconButton
-              className="admin-menu-button"
-              aria-label={menuOpen ? "Cerrar menú" : "Abrir menú"}
-              aria-expanded={menuOpen}
+              aria-label={drawerOpen ? "Cerrar menú" : "Abrir menú"}
+              aria-expanded={drawerOpen}
               aria-controls="admin-sidebar"
               onClick={() => setMenuOpen((open) => !open)}
               sx={{ color: "var(--chat-text)" }}
             >
-              {menuOpen ? <Close /> : <Menu />}
+              {drawerOpen ? <Close /> : <Menu />}
             </IconButton>
           )}
           <Button startIcon={<ArrowBack />} onClick={() => navigate("/chat")}>
@@ -122,37 +145,25 @@ export const AdminLayout = ({ userInfo }: { userInfo: UserInfo }) => {
       </header>
 
       <div className="admin-shell">
-        {showNav && (
-          <>
-            <nav
-              id="admin-sidebar"
-              className={`admin-sidebar${menuOpen ? " admin-sidebar--open" : ""}`}
-              aria-label="Áreas de administración"
+        {showNav &&
+          (isMobile ? (
+            <Drawer
+              variant="temporary"
+              open={drawerOpen}
+              onClose={() => setMenuOpen(false)}
+              container={() => document.querySelector<HTMLElement>(".admin-page")}
+              slotProps={{ paper: { className: "admin-sidebar admin-sidebar--drawer" } }}
+              ModalProps={{ keepMounted: false }}
             >
-              {groups.map((group) => (
-                <div key={group.id} className="admin-nav-group">
-                  <p className="admin-nav-group-label">{group.label}</p>
-                  {group.areas.map((area) => (
-                    <NavLink
-                      key={area.id}
-                      to={`/admin/${area.path}`}
-                      className={({ isActive }) => `admin-nav-link${isActive ? " admin-nav-link--active" : ""}`}
-                      onClick={() => setMenuOpen(false)}
-                    >
-                      <span>{area.label}</span>
-                      {area.id === "users" && !!usersSummary?.pending && (
-                        <span className="admin-nav-badge" aria-label={`${usersSummary.pending} pendientes`}>
-                          {usersSummary.pending}
-                        </span>
-                      )}
-                    </NavLink>
-                  ))}
-                </div>
-              ))}
+              <nav id="admin-sidebar" aria-label="Áreas de administración">
+                {navContent}
+              </nav>
+            </Drawer>
+          ) : (
+            <nav id="admin-sidebar" className="admin-sidebar" aria-label="Áreas de administración">
+              {navContent}
             </nav>
-            {menuOpen && <div className="admin-backdrop" onClick={() => setMenuOpen(false)} aria-hidden />}
-          </>
-        )}
+          ))}
         <main className="admin-content">{content}</main>
       </div>
     </div>

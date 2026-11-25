@@ -13,7 +13,8 @@ import Markdown from "react-markdown";
 import { useNavigate } from "react-router";
 import remarkGfm from "remark-gfm";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { canAdmin, useMyPermissions } from "../utils/permissions";
+import { visibleAreas } from "../admin/areas";
+import { useMyPermissions } from "../utils/permissions";
 import {
   audioAgentWebSocket,
   documentAgentWebSocket,
@@ -89,11 +90,11 @@ const AGENTS: AgentDef[] = [
   },
   {
     id: "audio",
-    name: "Audio Agent",
-    title: "Audio Agent",
+    name: "Llamadas",
+    title: "Llamadas",
     subtitle: "Procesa y consulta transcripciones de audio",
     description: "Trabaja con grabaciones y transcripciones",
-    hint: "Audio Agent puede cometer errores. Verifica la información importante.",
+    hint: "Llamadas puede cometer errores. Verifica la información importante.",
     suggestions: [
       "Resumen de la última reunión",
       "¿Qué decisiones se tomaron?",
@@ -174,7 +175,7 @@ const UserMenu = ({
               <Button
                 onClick={onOpenAdmin}
                 size="small"
-                aria-label="Abrir configuración de ingesta"
+                aria-label="Abrir administración"
                 variant="text"
                 fullWidth
                 sx={{
@@ -185,7 +186,7 @@ const UserMenu = ({
                 }}
                 startIcon={<Settings sx={{ fontSize: 18 }} />}
               >
-                Configuración
+                Administración
               </Button>
             )}
             <Button
@@ -537,6 +538,7 @@ export const Chat = (props: {
   if (!agents.some((a) => a.id === agentId)) {
     setMessages([]);
     setThinking(false);
+    setWsConnected(false);
     setAgentId("document");
   }
 
@@ -549,7 +551,6 @@ export const Chat = (props: {
     const agent = AGENTS.find((a) => a.id === agentId) ?? AGENTS[0];
     const ws = agent.connect(tokenRef.current);
     wsRef.current = ws;
-    setWsConnected(false);
 
     ws.onopen = () => setWsConnected(true);
     ws.onclose = () => setWsConnected(false);
@@ -607,9 +608,9 @@ export const Chat = (props: {
     }
   }, [props.userInfo.access_token]);
 
+  // The smooth scroll fires scroll events: handleMessagesScroll hides the button when it reaches the bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    setShowScrollDown(false);
   }, [messages]);
 
   useLayoutEffect(() => {
@@ -623,6 +624,8 @@ export const Chat = (props: {
     if (next === agentId) return;
     setMessages([]);
     setThinking(false);
+    setWsConnected(false);
+    setShowScrollDown(false);
     setAgentId(next);
   };
 
@@ -701,7 +704,7 @@ export const Chat = (props: {
             userInfo={props.userInfo}
             onLogout={handleLogout}
             onOpenAdmin={() => navigate("/admin")}
-            showAdmin={canAdmin(permissions, "ingestion")}
+            showAdmin={!!permissions && visibleAreas(permissions.admin_areas).length > 0}
           />
         </div>
       </header>

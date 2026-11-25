@@ -28,6 +28,11 @@
 }
 
 .admin-sidebar {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  max-height: 100vh;
+  overflow-y: auto;
   flex: 0 0 220px;
   padding: 16px 10px;
   background: var(--chat-surface);
@@ -118,12 +123,12 @@
   color: var(--admin-link);
 }
 
-.admin-menu-button {
-  display: none !important;
-}
-
-.admin-backdrop {
-  display: none;
+.admin-sidebar--drawer {
+  position: fixed; /* wins over the sticky desktop rule: both classes sit on the Drawer paper */
+  width: 260px;
+  padding: 16px 10px;
+  background: var(--chat-surface) !important;
+  color: var(--chat-text);
 }
 
 .admin-dialog {
@@ -138,34 +143,6 @@
 }
 
 @media (max-width: 767px) {
-  .admin-menu-button {
-    display: inline-flex !important;
-  }
-
-  .admin-sidebar {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    z-index: 30;
-    width: 260px;
-    overflow-y: auto;
-    transform: translateX(-100%);
-    transition: transform 0.2s ease;
-  }
-
-  .admin-sidebar--open {
-    transform: translateX(0);
-  }
-
-  .admin-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 20;
-    display: block;
-    background: rgba(0, 0, 0, 0.45);
-  }
-
   .admin-content {
     padding: 16px 16px 40px;
   }

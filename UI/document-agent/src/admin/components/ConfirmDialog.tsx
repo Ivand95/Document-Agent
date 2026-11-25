@@ -13,7 +13,8 @@ interface ConfirmDialogProps {
   onCancel: () => void;
 }
 
-/** Rendered inside the admin page (disablePortal) so it inherits the theme's CSS variables. */
+/** Portalled into the admin page (not body) so it inherits the theme's CSS variables. Not disablePortal:
+ * that would make MUI set aria-hidden on the app root, which contains the dialog itself. */
 export const ConfirmDialog = ({
   open,
   title,
@@ -29,7 +30,7 @@ export const ConfirmDialog = ({
     <Dialog
       open={open}
       onClose={busy ? undefined : onCancel}
-      disablePortal
+      container={() => document.querySelector<HTMLElement>(".admin-page")}
       aria-labelledby={titleId}
       slotProps={{ paper: { className: "admin-dialog" } }}
     >

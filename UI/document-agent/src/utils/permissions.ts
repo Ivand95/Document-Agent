@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { getMyPermissions, type MyPermissions } from "./axios";
 import { onPermissionsStale } from "./permissionEvents";
-import { createThrottle } from "./throttle";
+import { createTrailingThrottle } from "./throttle";
 
-/** At most one reload every 15 s from focus or 403s (also stops a 403 on /me/permissions from looping). */
+/** At most one reload every 15 s from focus or 403s; a trigger inside the window is deferred to its end,
+ * not dropped (also stops a 403 on /me/permissions from looping). */
 export const PERMISSIONS_MIN_REFETCH_MS = 15_000;
 
 /** The signed-in user's permissions. Reloaded when the token is renewed, when the window regains focus
@@ -14,7 +15,10 @@ export const useMyPermissions = (token: string) => {
   const [permissions, setPermissions] = useState<MyPermissions | null>(null);
   const [failed, setFailed] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
-  const refetch = useCallback(() => setReloadKey((key) => key + 1), []);
+  const refetch = useCallback(() => {
+    setFailed(false); // lets the UI show the spinner again while a retry is in flight
+    setReloadKey((key) => key + 1);
+  }, []);
 
   useEffect(() => {
     if (!token) return;
@@ -34,11 +38,9 @@ export const useMyPermissions = (token: string) => {
   }, [token, reloadKey]);
 
   useEffect(() => {
-    const allow = createThrottle(PERMISSIONS_MIN_REFETCH_MS);
-    allow(Date.now()); // the first load has just started
-    const maybeRefetch = () => {
-      if (allow(Date.now())) refetch();
-    };
+    const throttle = createTrailingThrottle(PERMISSIONS_MIN_REFETCH_MS, refetch);
+    throttle.markRan(); // the first load has just started
+    const maybeRefetch = () => throttle.call();
     const onVisibility = () => {
       if (document.visibilityState === "visible") maybeRefetch();
     };
@@ -47,11 +49,9 @@ export const useMyPermissions = (token: string) => {
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       stopListening();
+      throttle.cancel();
     };
   }, [refetch]);
 
   return { permissions, failed, refetch };
 };
-
-export const canAdmin = (permissions: MyPermissions | null, area: string) =>
-  !!permissions?.admin_areas.includes(area);
