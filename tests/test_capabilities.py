@@ -616,7 +616,9 @@ class ProviderTest(EnvCase):
         super().setUp()
         llm.reset_clients()
         self.addCleanup(llm.reset_clients)
-        self.addCleanup(llm._key_resolvers.clear)
+        saved = dict(llm._key_resolvers)  # keep the resolver the providers registry registers at import
+        llm._key_resolvers.clear()
+        self.addCleanup(lambda: (llm._key_resolvers.clear(), llm._key_resolvers.update(saved)))
 
     def test_model_references(self):
         self.assertEqual(llm.parse_model("gpt-4o"), llm.ModelRef("openai", "gpt-4o"))

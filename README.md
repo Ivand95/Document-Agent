@@ -85,6 +85,27 @@ $ PYTHONPATH=app uv run python -m capabilities.cli list
 $ PYTHONPATH=app uv run python -m capabilities.cli rotate-secrets # after putting a new key first
 ```
 
+## LLM models and OpenRouter
+
+The documents and calls agents always use OpenAI (`CHAT_MODEL`, `LIGHT_MODEL`). Admin-built tools call
+models from an allowlist managed at `/admin/models` (migration 0007), through `providers/gateway.py`,
+which checks: the model is enabled, the user has `use` on it (resource type `model`, id
+`openrouter:<vendor>/<model>`), the data it would read is at or below its `max_data_class`, and the
+user's monthly budget (`llm_budget_usd_month` in the permission's constraints). OpenRouter needs
+`OPENROUTER_ENABLED=true`, the provider enabled and its key set from the panel. Discovered models start
+disabled, capped at `internal` data, with `data_collection: "deny"`; raising either is super_admin-only.
+Every LLM call, including the core agents', is recorded in `llm_usage` (tokens and cost, never content).
+
+### Prompt tools
+
+Admins with the `prompt_tools` admin area (roles `admin`, `tool_admin`; migration 0008) build tools
+without code at `/admin/prompt-tools`: a Jinja2 template (sandboxed; every value it prints is wrapped
+as `<dato>…</dato>` untrusted data), an input schema, an optional output schema, an allowlisted model and
+a data class (what the tool may receive and returns, at most its model's `max_data_class`). A tool starts
+disabled and can be enabled only after a successful test run (`POST /admin/prompt-tools/{id}/test`) of
+its current version; changing its content needs it disabled and makes a new version. Users need `use`
+on the tool (resource type `capability`) and on its model.
+
 ## Running Agent in the console:
 
 ```bash

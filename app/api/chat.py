@@ -11,6 +11,7 @@ from jose import JWTError
 from langchain_core.messages import HumanMessage
 
 from api.deps import get_access, get_current_user_claims
+from core import llm
 from core.security import MAX_MESSAGE_CHARS, decode_token, origin_allowed
 from models.chat_request import ChatRequest
 from rbac import service as rbac
@@ -87,7 +88,8 @@ async def chat_endpoint(
     # The graph has a checkpointer, so every call needs a thread id; a fresh one keeps this stateless
     config = {"configurable": {"thread_id": str(uuid.uuid4())}}
 
-    result = await get_app_graph().ainvoke(inputs, config=config)
+    with llm.usage_context(user_id=access.user_id, agent_key="documents"):
+        result = await get_app_graph().ainvoke(inputs, config=config)
 
     return {"response": result["answer"], "department_context_used": department}
 
@@ -222,7 +224,8 @@ async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
             config = {"configurable": {"thread_id": session_id}}
 
             try:
-                result = await get_graph().ainvoke(inputs, config=config)
+                with llm.usage_context(user_id=access.user_id, agent_key="audio" if audio else "documents"):
+                    result = await get_graph().ainvoke(inputs, config=config)
             except Exception:
                 log.exception("[%s] agent failed", cid)
                 await send_error(websocket, INTERNAL_ERROR.format(cid=cid))

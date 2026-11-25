@@ -40,6 +40,8 @@ APP_TABLES = (
     "ingestion_folders", "ingestion_state", "users",
     "roles", "user_roles", "role_mappings", "permissions", "audit_log",
     "capabilities", "capability_operations", "connections",
+    "llm_providers", "llm_models", "llm_usage",
+    "user_admin_departments",
 )
 
 
@@ -205,6 +207,7 @@ def explain(what, error):
         "PGRST106": f"schema '{SUPABASE_SCHEMA}' is not exposed: add it to PGRST_DB_SCHEMAS on the rest service "
                     "(self-hosted; default is public,storage,graphql_public) or use SUPABASE_SCHEMA=public",
         "42501": "permission denied: SUPABASE_KEY must be the service_role key",
+        "42703": "a column is missing: apply the latest migrations (python -m db.db_setup --apply)",
     }
     hint = hints.get(code, "unexpected error")
     return f"{what} [{code}] {hint}: {message}"
@@ -233,7 +236,8 @@ def check_search_ready(client=global_supabase_client):
         # Every API call checks permissions here: without it nobody can use the agents
         f"table {SUPABASE_SCHEMA}.permissions": lambda: schema.table("permissions").select("id").limit(1).execute(),
         # Tools, MCP servers and CLIs the agents may call
-        f"table {SUPABASE_SCHEMA}.capabilities": lambda: schema.table("capabilities").select("id").limit(1).execute(),
+        f"table {SUPABASE_SCHEMA}.capabilities": lambda: schema.table("capabilities").select("id,last_test").limit(1).execute(),
+        f"table {SUPABASE_SCHEMA}.llm_models": lambda: schema.table("llm_models").select("id").limit(1).execute(),
     }
     problems = []
     for what, call in checks.items():

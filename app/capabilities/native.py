@@ -36,6 +36,8 @@ class ToolContext:
     limits: dict
     # Returns the decrypted secret of the capability's connection with that name (or the only one)
     secret: Callable[[str | None], dict]
+    access: Any = None  # the caller's rbac.model.Access (prompt tools check the model with it)
+    input_data_class: str = "sensitive"  # the most restricted class of data in the arguments
 
 
 @dataclass(frozen=True)

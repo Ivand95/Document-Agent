@@ -17,12 +17,15 @@ from api import auth, chat, me  # noqa: E402
 from api.admin import audit as admin_audit  # noqa: E402
 from api.admin import capabilities as admin_capabilities  # noqa: E402
 from api.admin import ingestion as admin_ingestion  # noqa: E402
+from api.admin import models as admin_models  # noqa: E402
+from api.admin import prompt_tools as admin_prompt_tools  # noqa: E402
 from api.admin import rbac as admin_rbac  # noqa: E402
 from api.admin import users as admin_users  # noqa: E402
 from capabilities.registry import sync_native_tools  # noqa: E402
 from core.security import frontend_origins, is_production, validate_settings  # noqa: E402
 from db.db_setup import ensure_database  # noqa: E402
 from integrations.m365 import validate_tenant  # noqa: E402
+from providers import usage as _llm_usage  # noqa: E402, F401  (stores the usage of every LLM call)
 
 log = logging.getLogger("main")
 
@@ -73,6 +76,8 @@ app.include_router(admin_users.router)
 app.include_router(admin_rbac.router)
 app.include_router(admin_audit.router)
 app.include_router(admin_capabilities.router)
+app.include_router(admin_models.router)
+app.include_router(admin_prompt_tools.router)
 app.include_router(me.router)
 
 

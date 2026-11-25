@@ -1,7 +1,7 @@
 """What permissions can name: resource types, actions, and the known resources of each type.
 
-Agents, admin areas and document categories are fixed in code. Capabilities live in the registry
-(capabilities/registry.py registers itself as their source). Models (WP4b) aren't checked yet.
+Agents, admin areas and document categories are fixed in code. Capabilities and models live in their
+registries (capabilities/registry.py, providers/registry.py), which register themselves as the source.
 """
 from collections.abc import Callable
 
@@ -25,6 +25,8 @@ ADMIN_AREAS = {
     "rbac": "Roles y permisos",
     "audit": "Auditoría",
     "capabilities": "Capacidades",
+    "models": "Modelos",
+    "prompt_tools": "Herramientas de prompt",
     "code_tools": "Herramientas de código",
 }
 

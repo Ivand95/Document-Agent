@@ -481,7 +481,8 @@ class PostgresIntegrationTest(unittest.TestCase):
             for role in ("anon", "authenticated"):
                 c.execute(f"set role {role}")
                 for table in ("roles", "user_roles", "role_mappings", "permissions", "audit_log",
-                              "capabilities", "capability_operations", "connections"):
+                              "capabilities", "capability_operations", "connections",
+                              "llm_providers", "llm_models", "llm_usage"):
                     with self.assertRaises(psycopg.errors.InsufficientPrivilege, msg=(role, table)):
                         c.execute(f"select 1 from {self.schema}.{table}")
                 c.execute("reset role")
@@ -539,6 +540,100 @@ class PostgresIntegrationTest(unittest.TestCase):
                 self.assertEqual(q(f"select count(*) from @@{table}")[0][0], 0, table)
             self.assertEqual(version(), 3)  # the dropped grant bumps the user's version
             self.assertEqual(q("select count(*) from @@connections where id = %s", conn_id)[0][0], 0)
+
+    # --- LLM models (0007) ---
+    def test_llm_model_allowlist_rules(self):
+        import psycopg
+
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            c.execute("set role service_role")
+            user_id = self.upsert(c)[0]
+            q = lambda sql, *a: c.execute(sql.replace("@@", self.schema + "."), a).fetchall()  # noqa: E731
+            providers = dict(q("select key, enabled from @@llm_providers"))
+            self.assertEqual(providers, {"openai": True, "openrouter": False})
+            self.assertEqual(q("select count(*) from @@permissions p join @@roles r on r.id = p.subject_id "
+                               "where r.key = 'admin' and p.resource_id = 'models'")[0][0], 1)
+            openrouter = q("select id from @@llm_providers where key = 'openrouter'")[0][0]
+            model = q("insert into @@llm_models (provider_id, model_id) values (%s, 'vendor/x') "
+                      "returning id, enabled, max_data_class, routing", openrouter)[0]
+            self.assertEqual(model[1:], (False, "internal", {"data_collection": "deny"}))
+            for sql in ("update @@llm_models set model_id = 'vendor/y'",
+                        "update @@llm_models set max_data_class = 'secret'",
+                        "update @@llm_models set price_in = -1",
+                        "insert into @@llm_usage (provider, model, outcome) values ('openai', 'openai:x', 'maybe')"):
+                with self.assertRaises(psycopg.errors.CheckViolation, msg=sql):
+                    with c.transaction():
+                        q(sql + " returning 1")
+            with self.assertRaises(psycopg.errors.UniqueViolation):
+                with c.transaction():
+                    q("insert into @@llm_models (provider_id, model_id) values (%s, 'vendor/x') returning 1", openrouter)
+
+            # The key lives in a connection with no capability; deleting it unlinks the provider
+            conn = q("insert into @@connections (name, auth_type) values ('llm:openrouter', 'token') returning id")[0][0]
+            q("update @@llm_providers set connection_id = %s where id = %s returning 1", conn, openrouter)
+            q("delete from @@connections where id = %s returning 1", conn)
+            self.assertIsNone(q("select connection_id from @@llm_providers where id = %s", openrouter)[0][0])
+
+            q("insert into @@permissions (subject_type, subject_id, resource_type, resource_id, action) "
+              "values ('user', %s, 'model', 'openrouter:vendor/x', 'use') returning 1", user_id)
+            q("insert into @@llm_usage (user_id, provider, model, tokens_in, cost_usd, cost_source) "
+              "values (%s, 'openrouter', 'openrouter:vendor/x', 5, 0.01, 'provider') returning id", user_id)
+            q("delete from @@llm_models where id = %s returning 1", model[0])
+            self.assertEqual(q("select count(*) from @@permissions where resource_type = 'model' "
+                               "and resource_id = 'openrouter:vendor/x'")[0][0], 0)
+            self.assertEqual(q("select count(*) from @@llm_usage")[0][0], 1)  # usage history stays
+
+    def test_prompt_tool_test_results(self):
+        import psycopg
+
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            c.execute("set role service_role")
+            q = lambda sql, *a: c.execute(sql.replace("@@", self.schema + "."), a).fetchall()  # noqa: E731
+            areas = q("select r.key from @@permissions p join @@roles r on r.id = p.subject_id "
+                      "where p.resource_type = 'admin_area' and p.resource_id = 'prompt_tools' order by 1")
+            self.assertEqual([a[0] for a in areas], ["admin", "tool_admin"])
+            tool = q("insert into @@capabilities (key, kind, name, data_class) values ('classify', 'prompt_tool', "
+                     "'Clasificar', 'internal') returning id, last_test")[0]
+            self.assertIsNone(tool[1])
+            q("update @@capabilities set last_test = '{\"version\": 1, \"ok\": true}' where id = %s returning 1",
+              tool[0])
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                with c.transaction():
+                    q("update @@capabilities set last_test = '[1]' where id = %s returning 1", tool[0])
+
+    def test_department_admins(self):
+        import psycopg
+
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            c.execute("set role service_role")
+            user_id = self.upsert(c)[0]
+            q = lambda sql, *a: c.execute(sql.replace("@@", self.schema + "."), a).fetchall()  # noqa: E731
+            grant = q("select p.resource_id, p.constraints from @@permissions p join @@roles r on r.id = p.subject_id "
+                      "where r.key = 'department_admin'")
+            self.assertEqual(grant, [("users", {"scope": "departments"})])
+            q("insert into @@user_admin_departments (user_id, department) values (%s, 'Comercial') returning 1", user_id)
+            for sql in ("insert into @@user_admin_departments (user_id, department) values (%s, 'Comercial')",
+                        "insert into @@user_admin_departments (user_id, department) values (%s, '  ')"):
+                with self.assertRaises((psycopg.errors.UniqueViolation, psycopg.errors.CheckViolation), msg=sql):
+                    with c.transaction():
+                        q(sql + " returning 1", user_id)
+            q("delete from @@users where id = %s returning 1", user_id)
+            self.assertEqual(q("select count(*) from @@user_admin_departments")[0][0], 0)
+
+    def test_manager_assignable_roles_are_seeded_once(self):
+        db_setup.apply_migrations(self.dsn)
+        migration = db_setup.MIGRATIONS_DIR / "0010_manager_assignable_roles.sql"
+        with self.connect() as c:
+            q = lambda sql, *a: c.execute(sql.replace("@@", self.schema + "."), a).fetchall()  # noqa: E731
+            marked = q("select key from @@roles where manager_assignable order by key")
+            self.assertEqual([m[0] for m in marked], ["audio_user", "report_user"])
+            q("update @@roles set manager_assignable = false where key = 'report_user' returning 1")
+            c.execute(db_setup.render(migration.read_text(), "public"))  # a re-run keeps the admin's choice
+            marked = q("select key from @@roles where manager_assignable order by key")
+            self.assertEqual([m[0] for m in marked], ["audio_user"])
 
 
 if __name__ == "__main__":

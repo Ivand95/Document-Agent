@@ -79,6 +79,23 @@ def require(action: str, resource_type: str, resource_id: str):
     return dependency
 
 
+def require_any(action: str, resource_type: str, *resource_ids: str):
+    """Like require, for a route open to any of several resources (e.g. the users or the rbac area)."""
+
+    def dependency(claims: dict = Depends(get_current_user_claims), access: Access = Depends(get_access)) -> dict:
+        if not any(access.can(action, resource_type, rid) for rid in resource_ids):
+            log.warning("Access denied: user %s, %s %s:%s", access.user_id, action, resource_type,
+                        "|".join(resource_ids))
+            if resource_type == "admin_area":
+                audit.record(claims, "access.denied", resource_type, "|".join(resource_ids), outcome="denied",
+                             details={"action": action, "reason": "no_rule"})
+            raise HTTPException(status_code=403, detail=FORBIDDEN)
+        return claims
+
+    dependency.__name__ = f"require_{action}_{resource_type}_{'_or_'.join(resource_ids)}"
+    return dependency
+
+
 def require_non_production():
     """Blocks the endpoint unless APP_ENV is a development environment."""
     if not indexing_endpoints_enabled():

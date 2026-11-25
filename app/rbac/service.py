@@ -50,7 +50,7 @@ def _time(value):
 def _role(row) -> Role:
     return Role(
         id=row["id"], key=row["key"], name=row["name"], description=row.get("description"),
-        is_system=bool(row.get("is_system")),
+        is_system=bool(row.get("is_system")), manager_assignable=bool(row.get("manager_assignable")),
     )
 
 
@@ -67,7 +67,8 @@ def _rule(row) -> Rule:
 
 def load_policy() -> Policy:
     db = _db()
-    roles = {r["id"]: _role(r) for r in db.table("roles").select("id,key,name,description,is_system").execute().data}
+    # "*": manager_assignable (0010) may not exist yet on a database that hasn't been migrated
+    roles = {r["id"]: _role(r) for r in db.table("roles").select("*").execute().data}
     mappings = tuple(
         Mapping(id=m["id"], kind=m["kind"], value=m["value"], role_id=m["role_id"])
         for m in db.table("role_mappings").select("id,kind,value,role_id").execute().data
@@ -149,6 +150,38 @@ def invalidate(user_id=None):
             _subjects.clear()
         else:
             _subjects.pop(str(user_id), None)
+
+
+def accesses_if_active(rows: list[dict]) -> dict[str, Access]:
+    """What each listed user (users rows with id, department, position) could do if they were active,
+    loaded in two queries. For marking protected users in admin lists: their status is ignored on
+    purpose, since a disabled admin is still an admin that a department admin must not re-enable."""
+    ids = [str(r["id"]) for r in rows if valid_uuid(r.get("id"))]
+    if not ids:
+        return {}
+    db = _db()
+    grants: dict = {}
+    for g in db.table("user_roles").select("user_id,role_id,expires_at,granted_by").in_("user_id", ids).execute().data:
+        grants.setdefault(str(g["user_id"]), []).append(
+            Grant(role_id=g["role_id"], expires_at=_time(g.get("expires_at")), granted_by=g.get("granted_by"))
+        )
+    rules: dict = {}
+    for r in (db.table("permissions").select(RULE_FIELDS).eq("subject_type", "user").in_("subject_id", ids)
+              .execute().data):
+        rules.setdefault(str(r["subject_id"]), []).append(_rule(r))
+    current = policy()
+    accesses = {}
+    for row in rows:
+        user_id = str(row["id"])
+        if user_id not in ids:
+            continue
+        subject = Subject(
+            user_id=user_id, status="active", perm_version=row.get("perm_version") or 1,
+            department=row.get("department"), position=row.get("position"),
+            grants=tuple(grants.get(user_id, ())), rules=tuple(rules.get(user_id, ())),
+        )
+        accesses[user_id] = Access(subject, current, legacy.legacy_role_keys(subject.department))
+    return accesses
 
 
 # --- Reading for the admin API ----------------------------------------------------------------------
@@ -249,8 +282,11 @@ def create_role(key: str, name: str, description: str | None, by: str) -> dict:
     return row
 
 
-def update_role(role_id, name: str | None, description: str | None, by: str) -> dict | None:
+def update_role(role_id, name: str | None, description: str | None, by: str,
+                manager_assignable: bool | None = None) -> dict | None:
     changes = {"updated_at": datetime.now().astimezone().isoformat(), "updated_by": by}
+    if manager_assignable is not None:
+        changes["manager_assignable"] = manager_assignable
     if name is not None:
         changes["name"] = name
     if description is not None:

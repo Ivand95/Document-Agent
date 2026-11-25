@@ -6,12 +6,15 @@ A user can call an operation only if:
      is one of them);
   3. the operation is on its whitelist and enabled;
   4. the operation is marked read-only (nothing that changes data outside the app ever runs);
-  5. the arguments match the operation's schema.
+  5. the checks of its kind pass (a prompt tool: its model is usable by this user for its data class);
+  6. when the caller names the model that will read the output (`reader`), that model may read the
+     capability's data class (sensitive output never reaches an `internal` model);
+  7. the arguments match the operation's schema.
 The same checks build the tool list the model sees (`tools_for`) and run again on every call (`call`),
 so a forged tool call fails too. Calls then run with a timeout and an output cap, the output is wrapped
 as untrusted data, and the call is written to the audit log (operation and arguments, never the output).
-
-The data-class check against the model that will read the output (WP4b) plugs in here as step 6.
+Kinds that send their arguments to a model (prompt tools) also get `input_data_class`, the most
+restricted class of data in the arguments, and refuse what their model may not receive.
 """
 import asyncio
 import hashlib
@@ -27,8 +30,10 @@ from dataclasses import dataclass
 import jsonschema
 
 from capabilities import native, registry
+from capabilities.catalog import data_class_rank
 from capabilities.registry import Capability, Operation
 from core.prompt_safety import wrap_untrusted
+from providers import registry as model_registry
 from rbac import audit
 from rbac.model import Access
 
@@ -49,6 +54,11 @@ MESSAGES = {
     "not_read_only": "Esa operación puede modificar datos y no está permitida.",
     "bad_arguments": "Los argumentos no son válidos para esa operación.",
     "not_available": "Esa herramienta todavía no se puede ejecutar.",
+    "reader": "El modelo de este agente no puede leer los datos de esa herramienta.",
+    "data_class": "Esa herramienta no puede recibir este tipo de datos.",
+    "model": "El modelo de esa herramienta no está disponible.",
+    "too_large": "La entrada es demasiado larga para esa herramienta.",
+    "bad_output": "La herramienta devolvió una respuesta no válida.",
     "timeout": "La herramienta tardó demasiado en responder.",
     "failed": "La herramienta falló. Intenta de nuevo más tarde.",
 }
@@ -57,11 +67,16 @@ MESSAGES = {
 class CapabilityError(Exception):
     """A refused or failed call. `message` can be shown to the user (or the model); `detail` is for logs."""
 
-    def __init__(self, code: str, detail: str = ""):
+    def __init__(self, code: str, detail: str = "", message: str | None = None):
         self.code = code
-        self.message = MESSAGES.get(code, MESSAGES["failed"])
+        self.message = message or MESSAGES.get(code, MESSAGES["failed"])
         self.detail = detail
         super().__init__(f"{code}: {detail}" if detail else code)
+
+
+# Codes that mean "not allowed" (audited as denied); the rest are errors
+DENIED = ("not_found", "disabled", "denied", "not_whitelisted", "not_read_only", "bad_arguments", "reader",
+          "data_class", "model", "too_large")
 
 
 @dataclass(frozen=True)
@@ -101,8 +116,22 @@ class Authorized:
 # --- Checks ---------------------------------------------------------------------------------------------
 
 
-def authorize(access: Access, capability_key: str, operation: str, snap=None) -> Authorized:
-    """Checks 1–4. Raises CapabilityError."""
+# Extra checks per kind: check(access, capability) raises CapabilityError
+KIND_CHECKS: dict[str, Callable[[Access, Capability], None]] = {}
+
+
+def register_check(kind: str, check: Callable[[Access, Capability], None]) -> None:
+    KIND_CHECKS[kind] = check
+
+
+def reader_allows(reader: str, data_class: str) -> bool:
+    """Whether the model `reader` ("provider:model") may read data of this class."""
+    limit = model_registry.reader_max_data_class(reader)
+    return limit is not None and data_class_rank(data_class) <= data_class_rank(limit)
+
+
+def authorize(access: Access, capability_key: str, operation: str, snap=None, reader: str | None = None) -> Authorized:
+    """Checks 1–6. Raises CapabilityError."""
     snap = snap or registry.snapshot()
     capability = snap.get(capability_key)
     if capability is None:
@@ -120,11 +149,16 @@ def authorize(access: Access, capability_key: str, operation: str, snap=None) ->
         raise CapabilityError("not_whitelisted", f"{capability_key}.{operation}")
     if not op.read_only:
         raise CapabilityError("not_read_only", f"{capability_key}.{operation}")
+    kind_check = KIND_CHECKS.get(capability.kind)
+    if kind_check is not None:
+        kind_check(access, capability)
+    if reader is not None and not reader_allows(reader, capability.data_class):
+        raise CapabilityError("reader", f"{capability.data_class} -> {reader}")
     return Authorized(capability, op, decision.constraints)
 
 
 def validate_args(op: Operation, args) -> dict:
-    """Check 5."""
+    """Check 7."""
     if not isinstance(args, dict):
         raise CapabilityError("bad_arguments", "arguments must be an object")
     try:
@@ -154,8 +188,9 @@ def _model_schema(schema: dict) -> dict:
     return schema
 
 
-def tools_for(access: Access) -> list[ToolSpec]:
-    """Every operation this user may call now, for the model's tool list."""
+def tools_for(access: Access, reader: str | None = None) -> list[ToolSpec]:
+    """Every operation this user may call now, for the model's tool list. With `reader` (the model that
+    will read the outputs, "provider:model"), only tools whose data that model may read."""
     snap = registry.snapshot()
     specs, taken = [], set()
     for key in sorted(snap.capabilities):
@@ -164,7 +199,7 @@ def tools_for(access: Access) -> list[ToolSpec]:
             continue
         for op in capability.operations:
             try:
-                authorize(access, key, op.operation, snap)
+                authorize(access, key, op.operation, snap, reader)
             except CapabilityError:
                 continue
             description = op.description or capability.description
@@ -199,7 +234,8 @@ async def _run_native(capability: Capability, op: Operation, args: dict, ctx: na
     return await asyncio.to_thread(native_op.handler, args, ctx)
 
 
-# How each kind runs. MCP (WP5), CLI (WP6), prompt and code tools (WP4b) register theirs.
+# How each kind runs. Prompt tools register theirs (capabilities/prompt_tools.py); MCP (WP5), CLI (WP6)
+# and code tools (WP4b) will.
 EXECUTORS: dict[str, Executor] = {"tool": _run_native}
 
 
@@ -243,12 +279,17 @@ def audit_args(op: Operation, args: dict) -> dict:
     return shown
 
 
-async def call(access: Access, claims: dict, capability_key: str, operation: str, args) -> CallResult:
-    """Runs one operation for the user, or raises CapabilityError. Every outcome is audited."""
+async def call(access: Access, claims: dict, capability_key: str, operation: str, args, *,
+               input_data_class: str = "sensitive", reader: str | None = None) -> CallResult:
+    """Runs one operation for the user, or raises CapabilityError. Every outcome is audited.
+
+    input_data_class: the most restricted class of data in `args` (the caller knows where they came from;
+    unknown = sensitive). reader: the model that will read the output, if any."""
     started = time.monotonic()
     details = {"operation": operation}
     try:
-        authorized = authorize(access, capability_key, operation)
+        data_class_rank(input_data_class)  # ValueError on a typo: a bug in the caller, not a refusal
+        authorized = authorize(access, capability_key, operation, reader=reader)
         capability, op = authorized.capability, authorized.operation
         details["args"] = audit_args(op, validate_args(op, args))
         executor = EXECUTORS.get(capability.kind)
@@ -260,7 +301,8 @@ async def call(access: Access, claims: dict, capability_key: str, operation: str
                                      authorized.constraints["max_rows"])
         timeout = limits.get("timeout_seconds") or capability.config.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS
         ctx = native.ToolContext(user_id=access.user_id, capability_key=capability_key, operation=operation,
-                                 config=capability.config, limits=limits, secret=_secret_reader(capability))
+                                 config=capability.config, limits=limits, secret=_secret_reader(capability),
+                                 access=access, input_data_class=input_data_class)
         try:
             output = await asyncio.wait_for(executor(capability, op, args, ctx), timeout=timeout)
         except asyncio.TimeoutError:
@@ -285,8 +327,7 @@ async def call(access: Access, claims: dict, capability_key: str, operation: str
         return CallResult(capability_key, operation, capability.data_class, wrapped, len(text), truncated, duration)
     except CapabilityError as e:
         details.update({"error": e.code, "duration_ms": int((time.monotonic() - started) * 1000)})
-        outcome = "denied" if e.code in ("not_found", "disabled", "denied", "not_whitelisted", "not_read_only",
-                                         "bad_arguments") else "error"
+        outcome = "denied" if e.code in DENIED else "error"
         # Argument errors can quote the values (which may be the user's text): log only the code then
         log.warning("Capability call %s.%s refused or failed: %s", capability_key, operation,
                     e.code if e.code == "bad_arguments" else e)

@@ -209,10 +209,10 @@ def create_capability(key, kind, name, description, risk, data_class, config, by
     return row
 
 
-def update_capability(capability: dict, changes: dict, by: str) -> dict:
-    """changes: any of name, description, enabled, risk, data_class, config. A config change bumps
-    the version."""
-    allowed = {"name", "description", "enabled", "risk", "data_class", "config"}
+def update_capability(capability: dict, changes: dict, by: str, new_version: bool = False) -> dict:
+    """changes: any of name, description, enabled, risk, data_class, config (and last_test, for the
+    tool editors). A config change, or new_version, bumps the version."""
+    allowed = {"name", "description", "enabled", "risk", "data_class", "config", "last_test"}
     unknown = set(changes) - allowed
     if unknown:
         raise ValueError(f"No se puede cambiar: {', '.join(sorted(unknown))}")
@@ -221,8 +221,9 @@ def update_capability(capability: dict, changes: dict, by: str) -> dict:
     if "config" in update:
         tool = native.get(capability["key"]) if capability["kind"] == "tool" else None
         update["config"] = validate_config(capability["kind"], update["config"], tool.config_schema if tool else None)
-        if update["config"] != capability.get("config"):
-            update["version"] = (capability.get("version") or 1) + 1
+        new_version = new_version or update["config"] != capability.get("config")
+    if new_version:
+        update["version"] = (capability.get("version") or 1) + 1
     update.update({"updated_at": _now(), "updated_by": by})
     rows = _db().table("capabilities").update(update).eq("id", capability["id"]).execute().data
     invalidate()

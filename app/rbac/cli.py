@@ -26,6 +26,7 @@ def _user(service, email):
 def main(argv=None):
     load_dotenv()
     import capabilities.registry  # noqa: F401  (lets `effective` list the registered capabilities)
+    import providers.registry  # noqa: F401  (and check model ids)
     from rbac import audit, service
     from rbac.catalog import SUPER_ADMIN
 

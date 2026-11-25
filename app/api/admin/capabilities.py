@@ -7,7 +7,8 @@ Everything needs `admin` on the `capabilities` admin area. On top of that:
 - native tools come from code: they can't be created or deleted here, and their operations' schema,
   description and read-only flag can't be edited (only enabled and limits);
 - MCP and CLI capabilities are created here; skills, prompt tools and code tools have their own flows
-  (WP13, WP4b) and can only be enabled/disabled here;
+  (WP13, WP4b) and can only be enabled/disabled here (a prompt tool only after a successful test run of
+  its current version, see /admin/prompt-tools);
 - secrets are write-only: stored encrypted, never returned, never written to the audit log.
 Who may *use* a capability is set in the permission matrix (/admin/rbac, resource_type "capability").
 """
@@ -18,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from postgrest.exceptions import APIError
 
 from api.deps import get_access, require
-from capabilities import health, native, registry, secrets
+from capabilities import health, native, prompt_tools, registry, secrets
 from capabilities.catalog import AUTH_TYPES, CREATABLE_KINDS, DATA_CLASSES, KINDS, RISKS, data_class_rank
 from models.capabilities import (
     CapabilityCreate, CapabilityUpdate, ConnectionCreate, ConnectionUpdate, OperationCreate, OperationUpdate,
@@ -159,10 +160,16 @@ def update_endpoint(
     changes = request.model_dump(exclude_none=True)
     if not changes:
         return capability
+    own_editor = capability["kind"] in ("skill", "prompt_tool", "code_tool")
+    if own_editor and ("config" in changes or ("data_class" in changes and capability["kind"] != "skill")):
+        raise HTTPException(status_code=400, detail=OWN_EDITOR)
     if "data_class" in changes:
         guard_data_class(actor, changes["data_class"], capability["data_class"])
-    if "config" in changes and capability["kind"] in ("skill", "prompt_tool", "code_tool"):
-        raise HTTPException(status_code=400, detail=OWN_EDITOR)
+    if changes.get("enabled") and not capability["enabled"] and capability["kind"] == "prompt_tool":
+        try:
+            prompt_tools.ready_to_enable(capability)
+        except prompt_tools.NotReady as e:
+            raise HTTPException(status_code=409, detail=str(e))
     if changes.get("enabled") and capability["kind"] == "tool" and native.get(capability["key"]) is None:
         raise HTTPException(status_code=409, detail="Esta herramienta ya no existe en el código.")
     try:

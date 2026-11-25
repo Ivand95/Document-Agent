@@ -18,6 +18,8 @@ class RoleCreate(BaseModel):
 class RoleUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
     description: str | None = Field(None, max_length=500)
+    # Department admins may give it to the users of their departments (/admin/users/{id}/roles)
+    manager_assignable: bool | None = None
 
 
 class MappingCreate(BaseModel):

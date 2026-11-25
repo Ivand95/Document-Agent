@@ -8,18 +8,27 @@ known provider prefix is an OpenAI model, so today's settings (`gpt-4o`, `ft:gpt
   by every OpenRouter model.
 - OpenRouter is OpenAI-compatible (same SDK, its own base URL). It is off unless OPENROUTER_ENABLED=true,
   and its key comes from a registered resolver (the encrypted connection, WP4b), never from the code.
-  Only admin-built capabilities will call it, through the gateway's data-class and budget checks.
+  Only admin-built capabilities call it, through providers.gateway (allowlist, data class, budget).
+
+Every call reports its usage (tokens, cost, never the content) to the registered sinks
+(providers/usage.py stores it). Who made the call comes from `usage_context`, set by the API around
+each agent run.
 """
 import asyncio
 import json
+import logging
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 import openai
 
 from core.config import CHAT_MODEL, LIGHT_MODEL, LLM_API_KEY, LLM_SERVICE
+
+log = logging.getLogger("llm")
 
 OPENAI = "openai"
 OPENROUTER = "openrouter"
@@ -104,6 +113,74 @@ def client(provider: str = OPENAI) -> openai.OpenAI:
         return fresh
 
 
+# --- Usage -----------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CallContext:
+    user_id: str | None = None
+    agent_key: str | None = None
+    capability_key: str | None = None
+
+
+_context: ContextVar[CallContext] = ContextVar("llm_call_context", default=CallContext())
+_sinks: list[Callable[[dict], None]] = []
+
+
+@contextmanager
+def usage_context(user_id=None, agent_key=None, capability_key=None) -> Iterator[None]:
+    """Calls made inside (including LangGraph nodes and threads started with asyncio.to_thread) are
+    counted for this user, agent and capability."""
+    current = _context.get()
+    token = _context.set(CallContext(
+        user_id=str(user_id) if user_id else current.user_id,
+        agent_key=agent_key or current.agent_key,
+        capability_key=capability_key or current.capability_key,
+    ))
+    try:
+        yield
+    finally:
+        _context.reset(token)
+
+
+def register_usage_sink(sink: Callable[[dict], None]) -> None:
+    if sink not in _sinks:
+        _sinks.append(sink)
+
+
+def report_usage(provider: str, model: str, response=None, outcome: str = "ok") -> dict:
+    """Builds the usage record of one call and hands it to the sinks. Never raises."""
+    usage = getattr(response, "usage", None)
+    cost = getattr(usage, "cost", None) if usage is not None else None  # OpenRouter reports it, OpenAI doesn't
+    ctx = _context.get()
+    record = {
+        "provider": provider, "model": f"{provider}:{model}", "user_id": ctx.user_id, "agent_key": ctx.agent_key,
+        "capability_key": ctx.capability_key,
+        "tokens_in": int(getattr(usage, "prompt_tokens", 0) or 0),
+        "tokens_out": int(getattr(usage, "completion_tokens", 0) or 0),
+        "cost_usd": float(cost) if isinstance(cost, (int, float)) else None,
+        "cost_source": "provider" if isinstance(cost, (int, float)) else None,
+        "outcome": outcome,
+    }
+    for sink in list(_sinks):
+        try:
+            sink(record)
+        except Exception:
+            log.exception("Usage sink failed")
+    return record
+
+
+def _create(provider: str, model: str, **kwargs):
+    """One chat completion, with its usage reported whatever happens."""
+    try:
+        response = client(provider).chat.completions.create(model=model, **kwargs)
+    except Exception:
+        report_usage(provider, model, outcome="error")
+        raise
+    report_usage(provider, model, response)
+    return response
+
+
 def core_model(model: str) -> str:
     """The OpenAI model name for a core-agent call; refuses any other provider."""
     ref = parse_model(model)
@@ -124,9 +201,7 @@ def chat_json_sync(messages, name, schema, model=CHAT_MODEL, retries=1):
     }
     last_error = None
     for _ in range(retries + 1):
-        response = client(OPENAI).chat.completions.create(
-            model=model, messages=messages, response_format=response_format
-        )
+        response = _create(OPENAI, model, messages=messages, response_format=response_format)
         try:
             return json.loads(response.choices[0].message.content)
         except (TypeError, json.JSONDecodeError) as e:
@@ -136,7 +211,7 @@ def chat_json_sync(messages, name, schema, model=CHAT_MODEL, retries=1):
 
 def chat_text_sync(messages, model=LIGHT_MODEL):
     model = core_model(model)
-    response = client(OPENAI).chat.completions.create(model=model, messages=messages)
+    response = _create(OPENAI, model, messages=messages)
     return (response.choices[0].message.content or "").strip()
 
 

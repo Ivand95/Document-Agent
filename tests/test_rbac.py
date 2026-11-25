@@ -19,7 +19,7 @@ from rbac_fixtures import FakeRBAC, role_id, rule, seed_data, seed_policy  # noq
 
 POSITIONS = (None, "", "Analista", "GR - Director", "gr - director", " GR - Director", "GR-Director", "Director GR - ")
 DEPARTMENTS = (*DEPARTMENT_LIST, None, "", " ", "Desconocido", "General")
-ADMIN_AREAS_OF_ADMIN = ["ingestion", "users", "rbac", "audit", "capabilities"]  # 0005 + 0006
+ADMIN_AREAS_OF_ADMIN = ["ingestion", "users", "rbac", "audit", "capabilities", "models", "prompt_tools"]  # 0005-0008
 
 
 def access(department="Tecnología", position="Analista", status="active", roles=(), rules=(), policy=None,
@@ -94,9 +94,9 @@ class SeedTest(unittest.TestCase):
                 self.assertTrue(a.can(action, rtype, "anything"), (rtype, action))
         self.assertTrue(a.is_super_admin)
 
-    def test_tool_admin_holds_the_code_tools_area_only(self):
+    def test_tool_admin_holds_the_tool_areas_only(self):
         a = access("Marketing", roles=["tool_admin"])
-        self.assertEqual(a.allowed_ids("admin", "admin_area"), ["code_tools"])
+        self.assertEqual(a.allowed_ids("admin", "admin_area"), ["prompt_tools", "code_tools"])
 
 
 class EvaluationTest(unittest.TestCase):
@@ -338,10 +338,10 @@ class CatalogTest(unittest.TestCase):
         catalog.validate_resource("doc_category", "*")
         catalog.validate_resource("capability", "sql_query")
         catalog.validate_resource("capability", "*")
-        catalog.validate_resource("model", "anything-registered-later")  # models aren't checked yet (WP4b)
+        catalog.validate_resource("model", "*")
         self.assertIn({"id": "sql_query", "label": "SQL"}, catalog.catalog()["resources"]["capability"])
         for rtype, rid in (("agent", "nope"), ("doc_category", "XX"), ("weird", "x"), ("model", ""), ("model", "x" * 201),
-                           ("capability", "not_registered")):
+                           ("capability", "not_registered"), ("model", "openrouter:not/registered")):
             with self.assertRaises(ValueError):
                 catalog.validate_resource(rtype, rid)
 

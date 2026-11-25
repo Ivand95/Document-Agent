@@ -84,6 +84,13 @@ class CLIConfig(BaseModel):
 
 
 KIND_CONFIGS = {"mcp": MCPConfig, "cli": CLIConfig}
+# Kinds whose config is validated by their own module (prompt tools: capabilities/prompt_tools.py)
+KIND_VALIDATORS: dict = {}
+
+
+def register_validator(kind: str, validator) -> None:
+    """validator(config) -> normalised config; raises ValueError."""
+    KIND_VALIDATORS[kind] = validator
 
 
 def _errors(error: ValidationError) -> str:
@@ -105,6 +112,8 @@ def validate_config(kind: str, config: dict, config_schema: dict | None = None) 
     tool's own schema for native tools."""
     if not isinstance(config, dict):
         raise ValueError("config debe ser un objeto")
+    if kind in KIND_VALIDATORS:
+        return KIND_VALIDATORS[kind](config)
     _small(config, MAX_CONFIG_CHARS, "config")
     reject_secrets(config, "config")
     model = KIND_CONFIGS.get(kind)

@@ -24,6 +24,7 @@ class Role:
     name: str
     description: str | None = None
     is_system: bool = False
+    manager_assignable: bool = False  # a department admin may give it (see delegable)
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,23 @@ class Policy:
 
     def role_by_key(self, key: str) -> Role | None:
         return next((r for r in self.roles.values() if r.key == key), None)
+
+
+def opens_admin(policy: "Policy", role_id: str) -> bool:
+    """Whether the role is super_admin, or one of its permissions opens an admin area or grants a whole
+    resource type ("*")."""
+    role = policy.roles.get(role_id)
+    return (role is not None and role.key == SUPER_ADMIN) or any(
+        r.effect == "allow" and (r.resource_type == "admin_area" or r.resource_id == WILDCARD)
+        for r in policy.role_rules.get(role_id, ())
+    )
+
+
+def delegable(policy: "Policy", role_id: str) -> bool:
+    """Whether a department admin may hand out this role: marked manager_assignable and not opens_admin
+    (checked again on every assignment, in case permissions were added to the role later)."""
+    role = policy.roles.get(role_id)
+    return role is not None and role.manager_assignable and not opens_admin(policy, role_id)
 
 
 @dataclass(frozen=True)

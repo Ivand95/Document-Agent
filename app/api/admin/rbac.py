@@ -20,7 +20,7 @@ from models.rbac import MappingCreate, PermissionSet, RoleAssign, RoleCreate, Ro
 from rbac import audit
 from rbac import service as rbac
 from rbac.catalog import SUPER_ADMIN, WILDCARD, catalog
-from rbac.model import Access
+from rbac.model import Access, opens_admin
 
 log = logging.getLogger("rbac")
 
@@ -114,9 +114,14 @@ def update_role_endpoint(
     role_id: uuid.UUID, request: RoleUpdate,
     claims: dict = Depends(require_rbac_admin), actor: Access = Depends(get_access),
 ):
-    """Name and description only: the key never changes (code and mappings may rely on it)."""
-    guard_role(actor, role_or_404(role_id))
-    role = rbac.update_role(role_id, request.name, request.description, by(claims))
+    """Name, description and manager_assignable: the key never changes (code and mappings may rely on it).
+    A role that opens an admin area or grants a whole resource type can't be made manager-assignable."""
+    current = role_or_404(role_id)
+    guard_role(actor, current)
+    if request.manager_assignable and opens_admin(rbac.policy(), str(role_id)):
+        raise HTTPException(status_code=409, detail="Este rol abre áreas de administración: no lo puede "
+                                                    "asignar un administrador de departamento.")
+    role = rbac.update_role(role_id, request.name, request.description, by(claims), request.manager_assignable)
     audit.record(claims, "role.update", "role", role_id, details=request.model_dump(exclude_none=True))
     return role
 
