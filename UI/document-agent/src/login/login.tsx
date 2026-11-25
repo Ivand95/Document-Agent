@@ -20,18 +20,9 @@ export const Login = (props: { userInfo: UserInfo, setUserInfo: (userInfo: UserI
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault()
-        setLoading(true)
-        if (email === 'juan.niemen@gmail.com' && password === '123456') {
-            await new Promise((resolve) => setTimeout(() => {
-                setLoading(false)
-                props.setUserInfo({ access_token: '1234567890', name: 'Juan Niemen', email: 'juan.niemen@gmail.com', department: 'General' })
-                navigate('/chat', { replace: true })
-                resolve(true)
-            }, 2000))
-        } else {
-            setLoading(false)
-            setError('Correo electrónico o contraseña incorrectos')
-        }
+        // There is no email/password login on the server yet: only Microsoft sign-in works
+        setNotice('')
+        setError('Correo electrónico o contraseña incorrectos')
     }
 
     const handleLoginWithMicrosoft = async () => {

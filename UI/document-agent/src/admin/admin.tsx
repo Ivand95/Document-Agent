@@ -329,7 +329,7 @@ const ReportSection = ({ token }: { token: string }) => {
 
 export const Admin = ({ userInfo }: { userInfo: UserInfo }) => {
   const navigate = useNavigate();
-  const permissions = useMyPermissions(userInfo.access_token);
+  const { permissions, failed } = useMyPermissions(userInfo.access_token);
 
   return (
     <div className="admin-page">
@@ -341,7 +341,11 @@ export const Admin = ({ userInfo }: { userInfo: UserInfo }) => {
         <ThemeToggle />
       </header>
       <main className="admin-main">
-        {permissions === null ? (
+        {permissions === null && failed ? (
+          <p className="admin-msg admin-msg--error">
+            No se pudieron cargar tus permisos. Recarga la página para intentarlo de nuevo.
+          </p>
+        ) : permissions === null ? (
           <CircularProgress size={24} />
         ) : canAdmin(permissions, "ingestion") ? (
           <>

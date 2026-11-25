@@ -525,12 +525,20 @@ export const Chat = (props: {
   const wsRef = useRef<WebSocket | null>(null);
   const tokenRef = useRef(props.userInfo.access_token);
   const [agentId, setAgentId] = useState<AgentId>("document");
-  const permissions = useMyPermissions(props.userInfo.access_token);
+  const { permissions } = useMyPermissions(props.userInfo.access_token);
   // Only the agents RBAC allows (the documents agent until permissions load); the server checks again
   const agents = useMemo(
     () => AGENTS.filter((a) => a.id === "document" || permissions?.agents.includes(API_AGENT_IDS[a.id])),
     [permissions],
   );
+
+  // An admin may revoke the agent in use: fall back to the documents agent instead of staying on it.
+  // Adjusted during render (not in an effect) so the stale agent never renders or connects.
+  if (!agents.some((a) => a.id === agentId)) {
+    setMessages([]);
+    setThinking(false);
+    setAgentId("document");
+  }
 
   const currentAgent = useMemo(
     () => AGENTS.find((a) => a.id === agentId) ?? AGENTS[0],
