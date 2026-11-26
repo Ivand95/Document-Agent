@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sys
@@ -19,7 +20,7 @@ from api import auth as api_auth, chat  # noqa: E402
 from users import service as users  # noqa: E402
 from core import security  # noqa: E402
 from models.user_profile import UserProfile  # noqa: E402
-from rbac_fixtures import FakeRBAC  # noqa: E402
+from rbac_fixtures import FakeRBAC, ws_connect  # noqa: E402
 
 FRONT = "https://front.example.com"
 STRONG_SECRET = "x" * 40
@@ -164,6 +165,41 @@ class LoginFlowTest(EnvTestCase):
         self.assertTrue(q["state"][0] and q["code_challenge"][0])
         self.assertNotEqual(self.start_login()["state"], q["state"])
 
+    def test_login_asks_for_a_form_post_callback(self):
+        q = self.start_login()
+        self.assertEqual(q["response_mode"], ["form_post"])
+        self.assertTrue(q["redirect_uri"][0].endswith("/auth/callback"))
+
+    def test_callback_only_accepts_post(self):
+        state = self.start_login()["state"][0]
+        self.assertEqual(self.client.get(f"/auth/callback?code=abc&state={state}").status_code, 405)
+
+    def test_callback_ignores_code_and_state_in_the_url(self):
+        state = self.start_login()["state"][0]
+        with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock()) as ex:
+            html = self.client.post(f"/auth/callback?code=abc&state={state}").text
+        self.assertLoginFailed(html)
+        ex.assert_not_called()
+
+    def test_callback_with_provider_error_fails(self):
+        state = self.start_login()["state"][0]
+        with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock()) as ex:
+            html = self.client.post(
+                "/auth/callback",
+                data={"state": state, "error": "access_denied", "error_description": "The user cancelled"},
+            ).text
+        self.assertLoginFailed(html)
+        ex.assert_not_called()
+
+    def test_callback_refuses_oversized_bodies(self):
+        state = self.start_login()["state"][0]
+        with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock()) as ex:
+            html = self.client.post(
+                "/auth/callback", data={"code": "abc", "state": state, "padding": "x" * (api_auth.MAX_CALLBACK_BODY + 1)}
+            ).text
+        self.assertLoginFailed(html)
+        ex.assert_not_called()
+
     def test_login_rejects_unknown_origin_in_production(self):
         self.env(APP_ENV="production", FRONTEND_URL=FRONT)
         self.assertEqual(self.client.get("/login", headers={"Origin": "https://evil.example.com"}).status_code, 403)
@@ -171,8 +207,8 @@ class LoginFlowTest(EnvTestCase):
         self.assertEqual(self.client.get("/login", headers={"Origin": FRONT}).status_code, 200)
 
     def test_callback_without_valid_state_gives_a_generic_error(self):
-        for params in ("code=abc", "code=abc&state=forged"):
-            html = self.client.get(f"/auth/callback?{params}").text
+        for form in ({"code": "abc"}, {"code": "abc", "state": "forged"}):
+            html = self.client.post("/auth/callback", data=form).text
             self.assertLoginFailed(html)
 
     def test_callback_success_posts_only_to_the_opener_origin_and_state_is_single_use(self):
@@ -182,21 +218,54 @@ class LoginFlowTest(EnvTestCase):
         with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock(return_value={"access_token": "ms"})) as ex, \
              mock.patch.object(api_auth, "get_user_profile", mock.AsyncMock(return_value=profile)), \
              mock.patch.object(users, "provision", return_value=user):
-            html = self.client.get(f"/auth/callback?code=abc&state={state}").text
+            html = self.client.post("/auth/callback", data={"code": "abc", "state": state}).text
             self.assertEqual(ex.call_args.args[0], "abc")
             self.assertTrue(ex.call_args.args[1])  # PKCE verifier
             self.assertIn('"https://front.example.com"', html)
             self.assertNotIn("</script><b>", html)  # escaped inside the script block
             self.assertIn("access_token", html)
 
-            self.assertLoginFailed(self.client.get(f"/auth/callback?code=abc&state={state}").text)
+            self.assertLoginFailed(self.client.post("/auth/callback", data={"code": "abc", "state": state}).text)
 
     def test_callback_does_not_leak_exception_details(self):
         state = self.start_login()["state"][0]
         with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock(side_effect=Exception("secret-detail"))):
-            html = self.client.get(f"/auth/callback?code=abc&state={state}").text
+            html = self.client.post("/auth/callback", data={"code": "abc", "state": state}).text
         self.assertNotIn("secret-detail", html)
         self.assertLoginFailed(html)
+
+
+    def assertNoStore(self, response):
+        self.assertEqual(response.headers.get("cache-control"), "no-store")
+        self.assertEqual(response.headers.get("referrer-policy"), "no-referrer")
+
+    def test_callback_page_is_never_cached_nor_sent_as_referrer(self):
+        # Unreadable body, unknown state, exchange failure and success all carry the headers
+        self.assertNoStore(self.client.post("/auth/callback", content=b"\xff\xfe",
+                                            headers={"Content-Type": "application/x-www-form-urlencoded"}))
+        self.assertNoStore(self.client.post("/auth/callback", data={"code": "abc", "state": "forged"}))
+        state = self.start_login()["state"][0]
+        with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock(side_effect=Exception("x"))):
+            self.assertNoStore(self.client.post("/auth/callback", data={"code": "abc", "state": state}))
+        state = self.start_login()["state"][0]
+        profile = UserProfile(id="1", name="Ana", email="ana@coop.test", department="IT", position="Analista")
+        user = users.User(id="11111111-1111-1111-1111-111111111111", status="active", perm_version=1)
+        with mock.patch.object(api_auth, "exchange_code_for_token", mock.AsyncMock(return_value={"access_token": "ms"})), \
+             mock.patch.object(api_auth, "get_user_profile", mock.AsyncMock(return_value=profile)), \
+             mock.patch.object(users, "provision", return_value=user):
+            r = self.client.post("/auth/callback", data={"code": "abc", "state": state})
+        self.assertIn("access_token", r.text)
+        self.assertNoStore(r)
+
+    def test_client_disconnect_while_reading_the_callback_is_a_failed_login(self):
+        from starlette.requests import ClientDisconnect
+
+        class GoneRequest:
+            async def stream(self):
+                yield b"code=abc"
+                raise ClientDisconnect()
+
+        self.assertIsNone(asyncio.run(api_auth.read_callback_form(GoneRequest())))
 
 
 class SessionEndpointsTest(EnvTestCase):
@@ -252,7 +321,7 @@ class WebSocketSecurityTest(EnvTestCase):
         self.claims = self.rbac.claims("IT", "Analista", sub="a@b")
 
     def connect(self, token, **kwargs):
-        return self.client.websocket_connect(f"/ws/chat?token={token}", **kwargs)
+        return ws_connect(self.client, "/ws/chat", token, **kwargs)
 
     def test_rejects_foreign_origin_in_production(self):
         self.env(APP_ENV="production", FRONTEND_URL=FRONT)
@@ -266,6 +335,109 @@ class WebSocketSecurityTest(EnvTestCase):
         with self.connect(token, headers={"origin": FRONT}) as ws:
             ws.send_json({"message": "hola"})
             self.assertEqual(ws.receive_json()["type"], "answer")
+
+    def test_successful_auth_frame_gets_ready(self):
+        with self.client.websocket_connect("/ws/chat") as ws:
+            ws.send_json({"type": "auth", "token": security.create_access_token(self.claims)})
+            self.assertEqual(ws.receive_json(), {"type": "ready"})
+            ws.send_json({"message": "hola"})
+            self.assertEqual(ws.receive_json()["type"], "answer")
+
+    def assertRefused(self, ws, code=1008, message=chat.SESSION_EXPIRED):
+        self.assertEqual(ws.receive_json(), {"type": "error", "content": message})
+        with self.assertRaises(WebSocketDisconnect) as ctx:
+            ws.receive_json()
+        self.assertEqual(ctx.exception.code, code)
+
+    def assertClosedWith1008(self, ws):
+        self.assertRefused(ws)
+
+    def test_permissions_failure_at_connect_closes_with_1011_and_says_so(self):
+        with mock.patch.object(chat, "socket_access", mock.AsyncMock(side_effect=RuntimeError("db down"))):
+            with self.client.websocket_connect("/ws/chat") as ws:
+                ws.send_json({"type": "auth", "token": security.create_access_token(self.claims)})
+                self.assertRefused(ws, code=1011, message=chat.UNAVAILABLE)
+        self.assertEqual(self.graph.calls, [])
+
+    def test_agent_not_allowed_at_connect_says_so(self):
+        with self.client.websocket_connect("/ws/chat/audio") as ws:
+            ws.send_json({"type": "auth", "token": security.create_access_token(self.claims)})
+            self.assertRefused(ws, message=chat.NOT_ALLOWED)
+
+    def test_renewal_sent_before_reading_ready_works(self):
+        token = security.create_access_token(self.claims)
+        with self.client.websocket_connect("/ws/chat") as ws:
+            ws.send_json({"type": "auth", "token": token})
+            ws.send_json({"type": "auth", "token": security.create_access_token(self.claims)})
+            security.revoke_token(security.decode_token(token))
+            ws.send_json({"message": "hola"})
+            self.assertEqual(ws.receive_json(), {"type": "ready"})
+            self.assertEqual(ws.receive_json()["type"], "answer")
+        self.assertEqual(len(self.graph.calls), 1)
+
+    def test_client_gone_during_handshake_does_not_raise(self):
+        class GoneSocket:
+            headers = {"origin": "http://localhost:5173"}
+
+            def __init__(self, first_frame):
+                self.first_frame = first_frame
+
+            async def accept(self):
+                pass
+
+            async def receive_text(self):
+                return self.first_frame
+
+            async def send_text(self, data):
+                raise RuntimeError('Cannot call "send" once a close message has been sent.')
+
+            async def close(self, code=1000, reason=None):
+                raise RuntimeError("already closed")
+
+        good = json.dumps({"type": "auth", "token": security.create_access_token(self.claims)})
+        for frame in (good, "not an auth frame"):
+            asyncio.run(chat.chat_socket(GoneSocket(frame), lambda: self.graph, audio=False))
+        self.assertEqual(self.graph.calls, [])
+
+    def test_first_frame_must_be_an_auth_frame(self):
+        for first in ({"message": "hola"}, {"type": "auth"}, {"type": "auth", "token": 123}, ["auth"]):
+            with self.client.websocket_connect("/ws/chat") as ws:
+                ws.send_json(first)
+                self.assertClosedWith1008(ws)
+        with self.client.websocket_connect("/ws/chat") as ws:
+            ws.send_text("hola")
+            self.assertClosedWith1008(ws)
+        with self.client.websocket_connect("/ws/chat") as ws:
+            ws.send_bytes(b'{"type": "auth"}')
+            self.assertClosedWith1008(ws)
+        self.assertEqual(self.graph.calls, [])
+
+    def test_bad_token_in_first_frame_is_refused(self):
+        expired = security.create_access_token(self.claims)
+        security.revoke_token(security.decode_token(expired))
+        no_scope = security.create_access_token({"user_id": self.claims["user_id"], "sub": "a@b"})
+        for token in ("nope", expired, no_scope):
+            with self.client.websocket_connect("/ws/chat") as ws:
+                ws.send_json({"type": "auth", "token": token})
+                self.assertClosedWith1008(ws)
+        self.assertEqual(self.graph.calls, [])
+
+    def test_token_in_the_url_does_not_authenticate(self):
+        token = security.create_access_token(self.claims)
+        with self.client.websocket_connect(f"/ws/chat?token={token}") as ws:
+            ws.send_json({"message": "hola"})
+            self.assertClosedWith1008(ws)
+        self.assertEqual(self.graph.calls, [])
+
+    def test_oversized_first_frame_is_refused(self):
+        with self.client.websocket_connect("/ws/chat") as ws:
+            ws.send_text(json.dumps({"type": "auth", "token": "a" * (chat.MAX_FRAME_CHARS + 1)}))
+            self.assertClosedWith1008(ws)
+
+    def test_connection_closes_if_no_auth_frame_arrives_in_time(self):
+        with mock.patch.object(chat, "AUTH_TIMEOUT_SECONDS", 0.05):
+            with self.client.websocket_connect("/ws/chat") as ws:
+                self.assertClosedWith1008(ws)
 
     def test_long_messages_are_refused_without_reaching_the_agent(self):
         with self.connect(security.create_access_token(self.claims)) as ws:

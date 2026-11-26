@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import main  # noqa: E402
 from core.config import CATEGORY_LABELS, DEPARTMENT_LIST, get_department_categories  # noqa: E402
-from rbac import catalog, legacy, service  # noqa: E402
+from rbac import audit, catalog, legacy, service  # noqa: E402
 from rbac.model import Access, Grant, Mapping, Policy, Subject, merge_constraints  # noqa: E402
 from rbac_fixtures import FakeRBAC, role_id, rule, seed_data, seed_policy  # noqa: E402
 
@@ -537,6 +537,48 @@ class AdminRbacApiTest(NoLegacyEnv):
             self.assertEqual(self.client.get("/admin/audit", headers=self.admin).json(), {"entries": [{"action": "x"}]})
             self.assertEqual(self.client.get("/admin/audit", headers=self.rbac.headers("Marketing")).status_code, 403)
         entries.assert_called_once()
+
+    def test_audit_filters_by_action_prefixes(self):
+        with mock.patch("rbac.audit.list_entries", return_value=[]) as entries:
+            r = self.client.get("/admin/audit", params={"action_prefix": "role., permission.,mapping."},
+                                headers=self.admin)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(entries.call_args.kwargs["action_prefixes"], ["role.", "permission.", "mapping."])
+
+    def test_audit_rejects_bad_action_prefixes(self):
+        with mock.patch("rbac.audit.list_entries", return_value=[]) as entries:
+            for bad in ("", ",", "Role.", "role.*", 'a",b', ",".join(["a."] * 11)):
+                with self.subTest(bad=bad):
+                    r = self.client.get("/admin/audit", params={"action_prefix": bad}, headers=self.admin)
+                    self.assertEqual(r.status_code, 422)
+        entries.assert_not_called()
+
+
+class AuditQueryTest(unittest.TestCase):
+    """list_entries builds the PostgREST query; the client is a chain of mocks."""
+
+    def _db(self):
+        query = mock.MagicMock()
+        for name in ("select", "eq", "or_", "gte", "lt", "order", "range"):
+            getattr(query, name).return_value = query
+        query.execute.return_value.data = [{"action": "role.create"}]
+        db = mock.MagicMock()
+        db.table.return_value = query
+        return db, query
+
+    def test_action_prefixes_become_one_or_filter(self):
+        db, query = self._db()
+        with mock.patch("rbac.audit._db", return_value=db):
+            rows = audit.list_entries(action_prefixes=["role.", "prompt_tool."])
+        self.assertEqual(rows, [{"action": "role.create"}])
+        query.or_.assert_called_once_with('action.like."role.*",action.like."prompt_tool.*"')
+
+    def test_without_prefixes_there_is_no_or_filter(self):
+        db, query = self._db()
+        with mock.patch("rbac.audit._db", return_value=db):
+            audit.list_entries(action="role.create")
+        query.or_.assert_not_called()
+        query.eq.assert_called_once_with("action", "role.create")
 
 
 if __name__ == "__main__":

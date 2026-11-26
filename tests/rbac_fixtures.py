@@ -222,3 +222,23 @@ class FakeRBAC:
         testcase.addCleanup(registry.invalidate)
         testcase.addCleanup(model_registry.invalidate)
         return self
+
+
+from contextlib import contextmanager  # noqa: E402
+
+
+@contextmanager
+def ws_connect(client, path, token, **kwargs):
+    """Opens a chat WebSocket and authenticates with the first frame (the token never goes in the URL).
+
+    Yields the socket once the server answers {"type": "ready"}; a refused connection (an error frame,
+    then the close) raises WebSocketDisconnect, like a refused handshake did when the token travelled
+    in the query.
+    """
+    with client.websocket_connect(path, **kwargs) as ws:
+        ws.send_json({"type": "auth", "token": token})
+        ready = ws.receive_json()
+        if ready.get("type") == "error":
+            ws.receive_json()  # raises WebSocketDisconnect: the server closes right after the error
+        assert ready == {"type": "ready"}, ready
+        yield ws

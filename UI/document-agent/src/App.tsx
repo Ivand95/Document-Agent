@@ -7,12 +7,18 @@ import { encrypt, decrypt } from './utils/crypto'
 import { isAxiosError } from 'axios'
 import { refreshSession } from './utils/axios'
 import { tokenExpiry } from './utils/token'
+import { AdminIndex } from './admin/AdminIndex'
+import { RequireArea } from './admin/components/RequireArea'
 
 // Each screen is its own chunk: login doesn't download the chat (markdown renderer, icons) and vice versa
 const Login = lazy(() => import('./login/login').then((m) => ({ default: m.Login })))
 const Chat = lazy(() => import('./chat/chat').then((m) => ({ default: m.Chat })))
 
-const Admin = lazy(() => import('./admin/admin').then((m) => ({ default: m.Admin })))
+const AdminLayout = lazy(() => import('./admin/AdminLayout').then((m) => ({ default: m.AdminLayout })))
+const IngestionPage = lazy(() => import('./admin/ingestion/IngestionPage').then((m) => ({ default: m.IngestionPage })))
+const UsersList = lazy(() => import('./admin/users/UsersList').then((m) => ({ default: m.UsersList })))
+const UserDetail = lazy(() => import('./admin/users/UserDetail').then((m) => ({ default: m.UserDetail })))
+const AuditPage = lazy(() => import('./admin/audit/AuditPage').then((m) => ({ default: m.AuditPage })))
 
 const STORAGE_KEY = 'document-agent-user'
 const EMPTY_USER: UserInfo = { access_token: '', name: '', email: '', department: '' }
@@ -92,10 +98,45 @@ function App() {
             path="/admin"
             element={
               <ProtectedRoute isLoggedIn={!!userInfo.access_token}>
-                <Admin userInfo={userInfo} />
+                <AdminLayout userInfo={userInfo} />
               </ProtectedRoute>
             }
-          />
+          >
+            <Route index element={<AdminIndex />} />
+            <Route
+              path="ingestion"
+              element={
+                <RequireArea area="ingestion">
+                  <IngestionPage />
+                </RequireArea>
+              }
+            />
+            <Route
+              path="users"
+              element={
+                <RequireArea area="users">
+                  <UsersList />
+                </RequireArea>
+              }
+            />
+            <Route
+              path="users/:id"
+              element={
+                <RequireArea area="users">
+                  <UserDetail />
+                </RequireArea>
+              }
+            />
+            <Route
+              path="audit"
+              element={
+                <RequireArea area="audit">
+                  <AuditPage />
+                </RequireArea>
+              }
+            />
+            <Route path="*" element={<AdminIndex />} />
+          </Route>
         </Routes>
       </Suspense>
     </BrowserRouter>

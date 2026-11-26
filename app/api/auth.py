@@ -4,11 +4,12 @@ import asyncio
 import json
 import logging
 import os
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from jose import JWTError
+from starlette.requests import ClientDisconnect
 
 from api.deps import get_current_user_claims
 from core.security import (
@@ -35,6 +36,10 @@ PROFILE_INCOMPLETE = (
     "Tu perfil de Microsoft 365 no tiene departamento o cargo asignado. Contacta a Tecnología para completarlo."
 )
 REDIRECT_URI = os.getenv("AUTH_REDIRECT_URI", "http://localhost:8000")
+# Microsoft's form post carries code, state and a few short fields; anything bigger is refused
+MAX_CALLBACK_BODY = 16 * 1024
+# The callback page can carry the session token: never cache it, never leak its URL as a referrer
+CALLBACK_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
 
 @router.get("/login")
@@ -49,7 +54,7 @@ def login(request: Request):
             "client_id": CLIENT_ID,
             "response_type": "code",
             "redirect_uri": f"{REDIRECT_URI}/auth/callback",
-            "response_mode": "query",
+            "response_mode": "form_post",
             "scope": LOGIN_SCOPE,
             "state": state,
             "code_challenge": challenge,
@@ -59,12 +64,12 @@ def login(request: Request):
     return {"login_url": f"{AUTHORITY}/oauth2/v2.0/authorize?{query}"}
 
 
-def callback_page(payload: dict, target_origin: str) -> str:
+def callback_page(payload: dict, target_origin: str) -> HTMLResponse:
     """Page that hands the result to the window that opened the login popup."""
     # `<` is escaped so a value like "</script>" can't end the script block
     data = json.dumps(payload).replace("<", "\\u003c")
     target = json.dumps(target_origin).replace("<", "\\u003c")
-    return f"""
+    html = f"""
     <!DOCTYPE html>
     <html>
     <head><title>Autenticación completada</title></head>
@@ -79,13 +84,32 @@ def callback_page(payload: dict, target_origin: str) -> str:
     </body>
     </html>
     """
+    return HTMLResponse(html, headers=CALLBACK_HEADERS)
 
 
-@router.get("/auth/callback", response_class=HTMLResponse)
-async def auth_callback(
-    code: str | None = None, state: str | None = None, error: str | None = None
-):
+async def read_callback_form(request: Request) -> dict | None:
+    """First value of each field of the urlencoded body, or None if the body is too big or not text.
+    (Parsed by hand: python-multipart isn't a dependency.)"""
+    body = b""
+    try:
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > MAX_CALLBACK_BODY:
+                return None
+    except ClientDisconnect:  # the popup was closed mid-request: treat it as a failed login
+        return None
+    try:
+        fields = parse_qs(body.decode("ascii"), max_num_fields=20)
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return {name: values[0] for name, values in fields.items()}
+
+
+@router.post("/auth/callback", response_class=HTMLResponse)
+async def auth_callback(request: Request):
     """
+    Microsoft posts the result here (response_mode=form_post), so the code never travels in a URL.
+    0. Reads `code`, `state` and `error` from the urlencoded body (never from the query string)
     1. Checks `state` (one-time) and recovers the PKCE verifier
     2. Exchange code for MS Graph Token
     3. Get User Profile (Department)
@@ -93,6 +117,12 @@ async def auth_callback(
     5. Mint internal JWT with department and user id
     6. Return HTML that sends data to the opener window (only to the origin that started the login)
     """
+    form = await read_callback_form(request)
+    if form is None:
+        log.warning("Login rejected: unreadable or oversized callback body")
+        return callback_page({"type": "ms-auth-callback", "error": LOGIN_ERROR}, "*")
+    code, state, error = form.get("code"), form.get("state"), form.get("error")
+
     verifier, opener = consume_login(state)
     target = opener or "*"
     failure = {"type": "ms-auth-callback", "error": LOGIN_ERROR}

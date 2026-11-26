@@ -139,7 +139,7 @@ class CallbackTest(EnvTestCase):
     def callback(self):
         r = self.client.get("/login", headers={"Origin": "http://localhost:5173"})
         state = parse_qs(urlparse(r.json()["login_url"]).query)["state"][0]
-        return self.client.get(f"/auth/callback?code=abc&state={state}").text
+        return self.client.post("/auth/callback", data={"code": "abc", "state": state}).text
 
     def token_in(self, html):
         start = html.index('"access_token": "') + len('"access_token": "')
@@ -264,14 +264,40 @@ class AdminUsersTest(EnvTestCase):
         self.assertEqual((len(page["users"]), page["total"]), (1, 3))
         self.assertEqual(self.client.get("/admin/users?status=root", headers=self.login()).status_code, 422)
 
+    def search(self, body, headers=None):
+        r = self.client.post("/admin/users/search", json=body, headers=headers or self.login())
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
     def test_search_and_department_filter(self):
-        self.assertEqual([u["id"] for u in self.listing(query="?q=pérez")["users"]], [OTHER])
-        self.assertEqual([u["id"] for u in self.listing(query="?q=PEDRO@coop")["users"]], [OTHER])
-        body = self.listing(query="?q=pedro&status=active")
+        self.assertEqual([u["id"] for u in self.search({"q": "pérez"})["users"]], [OTHER])
+        self.assertEqual([u["id"] for u in self.search({"q": "PEDRO@coop"})["users"]], [OTHER])
+        body = self.search({"q": "pedro", "status": "active"})
         self.assertEqual((body["total"], body["counts"]["pending"]), (0, 1))  # counts ignore the status filter
-        self.assertEqual(self.listing(query="?q=*,)(%25_")["total"], 2)  # syntax characters are dropped
+        self.assertEqual(self.search({"q": "*,)(%_"})["total"], 2)  # syntax characters are dropped
+        self.assertEqual([u["id"] for u in self.search({"department": "tecnologia"})["users"]], [UID])
+        self.assertEqual(self.search({"department": "Nadie"})["total"], 0)
         self.assertEqual([u["id"] for u in self.listing(query="?department=tecnologia")["users"]], [UID])
         self.assertEqual(self.listing(query="?department=Nadie")["total"], 0)
+
+    def test_search_answers_like_the_listing(self):
+        self.assertEqual(self.search({}), self.listing())
+        self.assertEqual(self.search({"limit": 1, "offset": 1, "status": "active"}),
+                         self.listing(query="?limit=1&offset=1&status=active"))
+
+    def test_search_validates_its_body(self):
+        h = self.login()
+        for body in ({"q": "x" * 201}, {"department": "x" * 101}, {"name": "pedro"}, {"status": "root"},
+                     {"limit": 0}, {"limit": 501}, {"offset": -1}):
+            self.assertEqual(self.client.post("/admin/users/search", json=body, headers=h).status_code, 422, body)
+
+    def test_listing_ignores_q_in_the_url(self):
+        self.assertEqual(self.listing(query="?q=pedro")["total"], 2)
+
+    def test_search_follows_the_admin_scope(self):
+        _, h = self.manager()
+        self.assertEqual(self.search({"q": "pedro"}, h)["scope"], {"limited": True, "departments": ["Marketing"]})
+        self.assertEqual(self.search({"department": "Tecnología"}, h)["total"], 0)
 
     def test_detail(self):
         r = self.client.get(f"/admin/users/{OTHER}", headers=self.login())
@@ -432,6 +458,8 @@ class AdminUsersTest(EnvTestCase):
     def test_only_admins_can_list_or_change_users(self):
         h = self.headers("Comercial")
         self.assertEqual(self.client.get("/admin/users", headers=h).status_code, 403)
+        self.assertEqual(self.client.post("/admin/users/search", json={"q": "pedro"}, headers=h).status_code, 403)
+        self.assertEqual(self.client.post("/admin/users/search", json={}).status_code, 401)
         self.assertEqual(self.client.get(f"/admin/users/{OTHER}", headers=h).status_code, 403)
         self.assertEqual(self.client.post(f"/admin/users/{OTHER}/status", json={"status": "active"}, headers=h).status_code, 403)
         self.assertEqual(self.client.get("/admin/users").status_code, 401)
@@ -463,8 +491,9 @@ class AdminUsersTest(EnvTestCase):
             path for path, ops in main.app.openapi()["paths"].items()
             if path.startswith("/admin/users") and set(ops) & {"post", "put", "patch"}
         }
+        # /search is a read: a POST only so the search text stays out of the URL
         self.assertEqual(writes, {"/admin/users/{user_id}/status", "/admin/users/{user_id}/admin-departments",
-                                  "/admin/users/{user_id}/roles"})
+                                  "/admin/users/{user_id}/roles", "/admin/users/search"})
 
 
 if __name__ == "__main__":

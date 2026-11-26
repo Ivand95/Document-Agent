@@ -13,7 +13,7 @@ from starlette.websockets import WebSocketDisconnect  # noqa: E402
 import main  # noqa: E402
 from api import chat  # noqa: E402
 from core import security  # noqa: E402
-from rbac_fixtures import FakeRBAC, rule  # noqa: E402
+from rbac_fixtures import FakeRBAC, rule, ws_connect  # noqa: E402
 
 
 class FakeGraph:
@@ -96,7 +96,7 @@ class MainChatTest(unittest.TestCase):
         self.assertEqual(r.status_code, 401)
 
     def connect_audio(self, token):
-        return self.client.websocket_connect(f"/ws/chat/audio?token={token}")
+        return ws_connect(self.client, "/ws/chat/audio", token)
 
     def env(self, **values):
         patcher = mock.patch.dict(os.environ, values)
@@ -156,7 +156,7 @@ class MainChatTest(unittest.TestCase):
 
     def test_documents_ws_uses_rbac_categories(self):
         token = self.token(department="Marketing", rules=[rule("doc_category", "FI")])
-        with self.client.websocket_connect(f"/ws/chat?token={token}") as ws:
+        with ws_connect(self.client, "/ws/chat", token) as ws:
             ws.send_json({"message": "hola"})
             ws.receive_json()
         inputs, _ = self.graph.calls[-1]

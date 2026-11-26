@@ -6,7 +6,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from jose import JWTError
 from langchain_core.messages import HumanMessage
 
@@ -28,8 +28,12 @@ _app_audio_graph = None
 INTERNAL_ERROR = "Ocurrió un error interno. Código: {cid}"
 UNAVAILABLE = "No se pudieron comprobar tus permisos. Intenta de nuevo en unos minutos."
 NO_LONGER_ALLOWED = "Ya no tienes acceso a este asistente."
+NOT_ALLOWED = "No tienes permiso para usar este asistente."
+SESSION_EXPIRED = "Tu sesión expiró. Inicia sesión de nuevo."
 # A JSON frame carries the message plus a few small fields
 MAX_FRAME_CHARS = MAX_MESSAGE_CHARS * 2 + 512
+# How long a freshly opened socket may wait before sending its {"type": "auth"} frame
+AUTH_TIMEOUT_SECONDS = 10
 
 
 def get_app_graph():
@@ -139,44 +143,92 @@ async def mcp_frame(websocket: WebSocket, frame: dict, access: Access, mcps_off:
         available = [{**m, "enabled": m["key"] not in mcps_off} for m in available]
     await websocket.send_text(json.dumps({"type": "mcps", "mcps": available}))
 
+class SocketRefused(Exception):
+    """The connection must be closed with this code and reason (for the log), after telling the user `message`."""
 
-async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
+    def __init__(self, code: int, reason: str, message: str = SESSION_EXPIRED):
+        super().__init__(reason)
+        self.code, self.reason, self.message = code, reason, message
+
+
+async def refuse_socket(websocket: WebSocket, refused: SocketRefused):
+    """Sends the user-facing error and closes; a client that already left is not an error."""
+    try:
+        await send_error(websocket, refused.message)
+        await websocket.close(code=refused.code, reason=refused.reason)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+
+
+async def receive_auth_token(websocket: WebSocket) -> str:
+    """The token from the first frame, which must be {"type": "auth", "token": "<jwt>"} and arrive in time."""
+    try:
+        data = await asyncio.wait_for(websocket.receive_text(), timeout=AUTH_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        raise SocketRefused(1008, "Authentication timeout")
+    except KeyError:  # a binary frame has no text
+        raise SocketRefused(1008, "Could not validate credentials")
+    if len(data) > MAX_FRAME_CHARS:
+        raise SocketRefused(1008, "Could not validate credentials")
+    frame = parse_frame(data)
+    token = frame.get("token")
+    if frame.get("type") != "auth" or not isinstance(token, str) or not token:
+        raise SocketRefused(1008, "Could not validate credentials")
+    return token
+
+
+async def authorize_socket(token: str, agent_id: str) -> tuple[dict, Access]:
+    """Connect-time checks: a valid token with department and position, of an active user who may use the agent."""
+    try:
+        claims = decode_token(token)
+    except JWTError:
+        raise SocketRefused(1008, "Could not validate credentials")
+    if claims.get("department") is None or claims.get("position") is None:
+        raise SocketRefused(1008, "Token missing department or position scope")
+
+    # RBAC: the user must be active and allowed to use this agent (calls: managers and audio_user by default)
+    try:
+        access = await socket_access(claims)
+    except Exception:
+        log.exception("Could not load permissions (WebSocket connect)")
+        raise SocketRefused(1011, "Could not check permissions", UNAVAILABLE)
+    if access is None:
+        raise SocketRefused(1008, "Could not validate credentials")
+    if not access.can("use", "agent", agent_id):
+        raise SocketRefused(1008, f"Not authorized for {agent_id} conversations", NOT_ALLOWED)
+    return claims, access
+
+
+async def chat_socket(websocket: WebSocket, get_graph, audio: bool):
     """
-    Client connects to: ws://host/ws/chat?token=YOUR_JWT_HERE (or /ws/chat/audio).
-    The token is checked on connect and again before every message (expiry, revocation).
-    A client renews it without reconnecting by sending {"type": "auth", "token": "<new token>"}.
+    Client connects to: ws://host/ws/chat (or /ws/chat/audio), with no token in the URL (URLs end up in
+    access logs). Its first frame must be {"type": "auth", "token": "<jwt>"}, sent within
+    AUTH_TIMEOUT_SECONDS; the server answers {"type": "ready"}, or sends {"type": "error"} and closes the
+    socket (1008, or 1011 when permissions can't be loaded).
+    The token is checked again before every message (expiry, revocation, permissions).
+    A client renews it without reconnecting by sending another {"type": "auth", "token": "<new token>"}.
     MCP servers can be switched off for this conversation with {"type": "mcp_toggle"} (see mcp_frame).
     """
     if not origin_allowed(websocket.headers.get("origin")):
         await websocket.close(code=1008, reason="Origin not allowed")
         return
 
-    try:
-        claims = decode_token(token)
-    except JWTError:
-        await websocket.close(code=1008, reason="Could not validate credentials")
-        return
-    department, position = claims.get("department"), claims.get("position")
-    if department is None or position is None:
-        await websocket.close(code=1008, reason="Token missing department or position scope")
-        return
-
-    # RBAC: the user must be active and allowed to use this agent (calls: managers and audio_user by default)
     agent_id = "audio" if audio else "documents"
-    try:
-        access = await socket_access(claims)
-    except Exception:
-        log.exception("Could not load permissions (WebSocket connect)")
-        await websocket.close(code=1011, reason="Could not check permissions")
-        return
-    if access is None:
-        await websocket.close(code=1008, reason="Could not validate credentials")
-        return
-    if not access.can("use", "agent", agent_id):
-        await websocket.close(code=1008, reason=f"Not authorized for {agent_id} conversations")
-        return
-
     await websocket.accept()
+    try:
+        token = await receive_auth_token(websocket)
+        claims, access = await authorize_socket(token, agent_id)
+    except SocketRefused as refused:
+        await refuse_socket(websocket, refused)
+        return
+    except WebSocketDisconnect:
+        return
+    department, position = claims["department"], claims["position"]
+    try:
+        await websocket.send_text(json.dumps({"type": "ready"}))
+    except (WebSocketDisconnect, RuntimeError):
+        return  # the client left during the handshake
+
     # Each connection is its own conversation: LangGraph keeps its state under this id
     session_id = str(uuid.uuid4())
     mcps_off: set = set()  # MCP servers the user switched off in this conversation
@@ -198,7 +250,7 @@ async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
                 claims = decode_token(token)
             except JWTError:
                 if frame.get("type") != "auth":
-                    await send_error(websocket, "Tu sesión expiró. Inicia sesión de nuevo.")
+                    await send_error(websocket, SESSION_EXPIRED)
                     await websocket.close(code=1008)
                     return
 
@@ -206,7 +258,7 @@ async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
                 try:
                     renewed = decode_token(str(frame.get("token", "")))
                 except JWTError:
-                    await send_error(websocket, "Tu sesión expiró. Inicia sesión de nuevo.")
+                    await send_error(websocket, SESSION_EXPIRED)
                     await websocket.close(code=1008)
                     return
                 same_user = renewed.get("sub") == claims.get("sub") and renewed.get("user_id") == claims.get("user_id")
@@ -290,10 +342,10 @@ async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
 
 
 @router.websocket("/ws/chat")
-async def websocket_chat(websocket: WebSocket, token: str = Query(...)):
-    await chat_socket(websocket, token, get_app_graph, audio=False)
+async def websocket_chat(websocket: WebSocket):
+    await chat_socket(websocket, get_app_graph, audio=False)
 
 
 @router.websocket("/ws/chat/audio")
-async def websocket_chat_audio(websocket: WebSocket, token: str = Query(...)):
-    await chat_socket(websocket, token, get_app_audio_graph, audio=True)
+async def websocket_chat_audio(websocket: WebSocket):
+    await chat_socket(websocket, get_app_audio_graph, audio=True)

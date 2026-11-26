@@ -86,7 +86,7 @@ app.include_router(me.router)
 if __name__ == "__main__":
     print("Starting Uvicorn server on 0.0.0.0:8000")
     try:
-        uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+        uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), ws_max_size=65536)
     except KeyboardInterrupt:
         print("Keyboard interrupt received")
     except Exception as e:

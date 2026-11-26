@@ -270,6 +270,12 @@ class SessionToggleTest(MCPCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(captured["disabled_mcps"], ["ads"])
 
+    @staticmethod
+    def authenticate(ws, token):
+        """The socket handshake: the token in the first frame (never in the URL), answered with ready."""
+        ws.send_text(json.dumps({"type": "auth", "token": token}))
+        assert json.loads(ws.receive_text())["type"] == "ready"
+
     def test_websocket_frames(self):
         client = TestClient(main.app)
         token = self.rbac.token("Marketing", rules=[rule("capability", "ads")])
@@ -281,7 +287,8 @@ class SessionToggleTest(MCPCase):
                 return {"answer": {"answer": "ok"}}
 
         with mock.patch.object(chat, "get_app_graph", return_value=Graph()):
-            with client.websocket_connect(f"/ws/chat?token={token}") as ws:
+            with client.websocket_connect("/ws/chat") as ws:
+                self.authenticate(ws, token)
                 ws.send_text(json.dumps({"type": "mcps"}))
                 self.assertEqual(json.loads(ws.receive_text())["mcps"][0]["enabled"], True)
                 ws.send_text(json.dumps({"type": "mcp_toggle", "key": "ads", "enabled": False}))
@@ -297,7 +304,8 @@ class SessionToggleTest(MCPCase):
                 ws.send_text(json.dumps({"message": "otra"}))
                 ws.receive_text()
                 self.assertEqual(captured["disabled_mcps"], [])
-            with client.websocket_connect(f"/ws/chat?token={token}") as ws:  # a new conversation starts all on
+            with client.websocket_connect("/ws/chat") as ws:  # a new conversation starts all on
+                self.authenticate(ws, token)
                 ws.send_text(json.dumps({"type": "mcps"}))
                 self.assertTrue(json.loads(ws.receive_text())["mcps"][0]["enabled"])
 
