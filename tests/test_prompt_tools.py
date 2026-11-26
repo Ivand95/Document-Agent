@@ -278,8 +278,9 @@ class ReaderTest(PromptToolCase):
         capability_registry.update_capability(cap, {"enabled": True}, "t")
         capability_registry.add_operation(cap["id"], "list", "", {"type": "object"}, {}, True, "t")
         capability_registry.update_operation(cap["id"], "list", {"enabled": True}, "t")
-        self.addCleanup(gateway.EXECUTORS.pop, "mcp", None)
-        gateway.register_executor("mcp", mock.AsyncMock(return_value="socio 123"))
+        patcher = mock.patch.dict(gateway.EXECUTORS, {"mcp": mock.AsyncMock(return_value="socio 123")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.enable_after_test(self.create())
 
     def test_tool_list_and_calls_follow_the_reader(self):

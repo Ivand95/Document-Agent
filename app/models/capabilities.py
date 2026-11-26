@@ -57,6 +57,13 @@ class ConnectionUpdate(BaseModel):
     status: Literal["disabled", "unchecked"] | None = None
 
 
+class OAuthStart(BaseModel):
+    # Only for providers without dynamic client registration: a client registered by hand there.
+    # Write-only: kept in the connection's encrypted secret, never returned or logged.
+    client_id: str | None = Field(None, min_length=1, max_length=300)
+    client_secret: str | None = Field(None, min_length=1, max_length=500)
+
+
 class SecretSet(BaseModel):
     # Write-only: never echoed back, never logged
     secret: dict[str, str] = Field(min_length=1, max_length=10)

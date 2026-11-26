@@ -203,7 +203,9 @@ class RetrievalTrimmingTest(LLMTestCase):
 
 
 class EndpointAccessTest(unittest.TestCase):
-    PUBLIC = {"/health", "/login", "/auth/callback", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+    # /admin/capabilities/oauth/callback: an MCP provider's redirect; the one-time OAuth state is its key
+    PUBLIC = {"/health", "/login", "/auth/callback", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc",
+              "/admin/capabilities/oauth/callback"}
 
     def setUp(self):
         patcher = mock.patch.dict(os.environ, {"APP_ENV": "test", "JWT_SECRET_KEY": "x" * 40})

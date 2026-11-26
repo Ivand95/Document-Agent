@@ -37,9 +37,13 @@ class MCPConfig(BaseModel):
 
     transport: Literal["streamable_http", "stdio"] = "streamable_http"
     url: str | None = Field(None, max_length=500)
-    command: str | None = None  # stdio: executable name, looked up in the allowlisted directory (WP5/WP6)
+    command: str | None = None  # stdio: executable name, looked up in CAPABILITY_BIN_DIR (WP5/WP6)
     args: list[str] = Field(default_factory=list, max_length=20)
     timeout_seconds: int = Field(30, ge=1, le=300)
+    # Calls per minute through this server (all users together, per app process)
+    rate_per_minute: int = Field(60, ge=1, le=1000)
+    # Name of a read-only guard in capabilities/guards.py for this server's arguments (WP7/WP8)
+    guard: str | None = Field(None, pattern=r"^[a-z][a-z0-9_]{1,40}$")
 
     @field_validator("args")
     @classmethod

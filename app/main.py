@@ -17,6 +17,7 @@ from api import auth, chat, me  # noqa: E402
 from api.admin import audit as admin_audit  # noqa: E402
 from api.admin import capabilities as admin_capabilities  # noqa: E402
 from api.admin import ingestion as admin_ingestion  # noqa: E402
+from api.admin import mcp_oauth as admin_mcp_oauth  # noqa: E402
 from api.admin import models as admin_models  # noqa: E402
 from api.admin import prompt_tools as admin_prompt_tools  # noqa: E402
 from api.admin import rbac as admin_rbac  # noqa: E402
@@ -75,6 +76,7 @@ app.include_router(admin_ingestion.router)
 app.include_router(admin_users.router)
 app.include_router(admin_rbac.router)
 app.include_router(admin_audit.router)
+app.include_router(admin_mcp_oauth.router)  # before admin_capabilities: /oauth/callback isn't an id
 app.include_router(admin_capabilities.router)
 app.include_router(admin_models.router)
 app.include_router(admin_prompt_tools.router)

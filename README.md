@@ -96,6 +96,17 @@ user's monthly budget (`llm_budget_usd_month` in the permission's constraints). 
 disabled, capped at `internal` data, with `data_collection: "deny"`; raising either is super_admin-only.
 Every LLM call, including the core agents', is recorded in `llm_usage` (tokens and cost, never content).
 
+### MCP servers
+
+Register an MCP server at `/admin/capabilities` (kind `mcp`, Streamable HTTP URL; stdio only for
+executables in `CAPABILITY_BIN_DIR`). Its credentials go in a connection: a token (`auth_type` `token`),
+or OAuth (`auth_type` `oauth`, then `POST /admin/capabilities/connections/{id}/oauth/start` and consent in
+the popup; tokens are stored encrypted and refreshed on their own). `POST /admin/capabilities/{id}/discover`
+copies the server's tools into the whitelist: they start disabled and not read-only, and a whitelisted tool
+whose description or schema changes upstream is disabled again. In a chat, users can switch off the MCP
+servers they were given for that conversation (`GET /me/mcps`; WebSocket frames `{"type": "mcps"}` and
+`{"type": "mcp_toggle", "key": ..., "enabled": false}`; `disabled_mcps` in `POST /chat`).
+
 ### Prompt tools
 
 Admins with the `prompt_tools` admin area (roles `admin`, `tool_admin`; migration 0008) build tools

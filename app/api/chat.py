@@ -11,6 +11,7 @@ from jose import JWTError
 from langchain_core.messages import HumanMessage
 
 from api.deps import get_access, get_current_user_claims
+from capabilities import gateway
 from core import llm
 from core.security import MAX_MESSAGE_CHARS, decode_token, origin_allowed
 from models.chat_request import ChatRequest
@@ -85,8 +86,10 @@ async def chat_endpoint(
     log.info("Chat request from department '%s' (%d chars)", department, len(request.message))
 
     inputs = agent_inputs(request.message, claims, access)
-    # The graph has a checkpointer, so every call needs a thread id; a fresh one keeps this stateless
-    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    # The graph has a checkpointer, so every call needs a thread id; a fresh one keeps this stateless.
+    # disabled_mcps: MCP servers switched off for this request (agents that use tools leave them out)
+    config = {"configurable": {"thread_id": str(uuid.uuid4()),
+                               "disabled_mcps": sorted({k for k in request.disabled_mcps if isinstance(k, str)})}}
 
     with llm.usage_context(user_id=access.user_id, agent_key="documents"):
         result = await get_app_graph().ainvoke(inputs, config=config)
@@ -121,11 +124,28 @@ async def socket_access(claims: dict) -> Access | None:
     return access
 
 
+async def mcp_frame(websocket: WebSocket, frame: dict, access: Access, mcps_off: set) -> None:
+    """{"type": "mcps"} lists the user's MCP servers and whether each is on in this conversation;
+    {"type": "mcp_toggle", "key": "<capability key>", "enabled": false|true} switches one. Both answer
+    {"type": "mcps", "mcps": [{"key", "name", "description", "enabled"}]}. Only MCP servers can be
+    switched; the choice lasts for this connection (conversation) only."""
+    available = await asyncio.to_thread(gateway.session_toggles, access, frozenset(mcps_off))
+    if frame.get("type") == "mcp_toggle":
+        key, enabled = frame.get("key"), frame.get("enabled")
+        if not isinstance(enabled, bool) or key not in {m["key"] for m in available}:
+            await send_error(websocket, "Esa herramienta no está disponible en esta conversación.")
+            return
+        (mcps_off.discard if enabled else mcps_off.add)(key)
+        available = [{**m, "enabled": m["key"] not in mcps_off} for m in available]
+    await websocket.send_text(json.dumps({"type": "mcps", "mcps": available}))
+
+
 async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
     """
     Client connects to: ws://host/ws/chat?token=YOUR_JWT_HERE (or /ws/chat/audio).
     The token is checked on connect and again before every message (expiry, revocation).
     A client renews it without reconnecting by sending {"type": "auth", "token": "<new token>"}.
+    MCP servers can be switched off for this conversation with {"type": "mcp_toggle"} (see mcp_frame).
     """
     if not origin_allowed(websocket.headers.get("origin")):
         await websocket.close(code=1008, reason="Origin not allowed")
@@ -159,6 +179,7 @@ async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
     await websocket.accept()
     # Each connection is its own conversation: LangGraph keeps its state under this id
     session_id = str(uuid.uuid4())
+    mcps_off: set = set()  # MCP servers the user switched off in this conversation
     log.info("WS accepted for department '%s' (session %s, audio=%s)", department, session_id, audio)
 
     try:
@@ -196,6 +217,18 @@ async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
                 department, position = renewed["department"], renewed["position"]
                 continue
 
+            if frame.get("type") in ("mcps", "mcp_toggle"):
+                try:
+                    access = await socket_access(claims)
+                    if access is None:
+                        await websocket.close(code=1008, reason="Could not validate credentials")
+                        return
+                    await mcp_frame(websocket, frame, access, mcps_off)
+                except Exception:
+                    log.exception("[%s] could not list the MCP servers", cid)
+                    await send_error(websocket, UNAVAILABLE)
+                continue
+
             user_message = frame.get("message")
             if not isinstance(user_message, str) or not user_message.strip():
                 await send_error(websocket, "Mensaje vacío.")
@@ -221,7 +254,8 @@ async def chat_socket(websocket: WebSocket, token: str, get_graph, audio: bool):
             log.info("[%s] question from department '%s' (%d chars)", cid, department, len(user_message))
 
             inputs = agent_inputs(user_message, claims, access, audio)
-            config = {"configurable": {"thread_id": session_id}}
+            # Agents that use tools read disabled_mcps and leave those servers out (gateway session_off)
+            config = {"configurable": {"thread_id": session_id, "disabled_mcps": sorted(mcps_off)}}
 
             try:
                 with llm.usage_context(user_id=access.user_id, agent_key="audio" if audio else "documents"):

@@ -373,8 +373,8 @@ class GatewayTest(RegistryCase):
         self.assertLess(len(result.text), 400)
 
     def test_kinds_without_an_executor_are_hidden_and_refused(self):
-        cap = registry.create_capability("ads", "mcp", "Ads", "", "read", "sensitive",
-                                         {"url": "https://mcp.example.com"}, "t")
+        cap = registry.create_capability("ads", "cli", "Ads", "", "read", "sensitive",
+                                         {"executable": "ads-cli"}, "t")  # CLI: no executor until WP6
         registry.update_capability(cap, {"enabled": True}, "t")
         self.rbac.db.tables["capability_operations"].append(
             {"capability_id": cap["id"], "operation": "list", "enabled": True, "read_only": True,
@@ -543,9 +543,12 @@ class AdminApiTest(RegistryCase):
             self.assertNotIn(stored, response.text)
         self.assertNotIn("tk-SECRET", str(self.rbac.audit))
 
-        # No checker for MCP yet (WP5): the secret is verified, the status stays unchecked
-        r = self.client.post(f"{path}/check", headers=self.admin)
-        self.assertEqual(r.json()["status"], "unchecked")
+        # MCP (WP5): the check connects and lists the server's tools (no network here)
+        from capabilities.mcp import runtime as mcp_runtime
+
+        with mock.patch.object(mcp_runtime, "list_tools", mock.AsyncMock(return_value=["a", "b"])):
+            r = self.client.post(f"{path}/check", headers=self.admin)
+        self.assertEqual((r.json()["status"], r.json()["status_detail"]), ("ok", "Conexión correcta: 2 herramientas"))
         self.assertIsNotNone(r.json()["last_check_at"])
         with mock.patch.dict(os.environ, {"CAPABILITY_SECRET_KEY": OTHER_KEY}):
             r = self.client.post(f"{path}/check", headers=self.admin)

@@ -9,21 +9,28 @@ Everything needs `admin` on the `capabilities` admin area. On top of that:
 - MCP and CLI capabilities are created here; skills, prompt tools and code tools have their own flows
   (WP13, WP4b) and can only be enabled/disabled here (a prompt tool only after a successful test run of
   its current version, see /admin/prompt-tools);
-- secrets are write-only: stored encrypted, never returned, never written to the audit log.
+- secrets are write-only: stored encrypted, never returned, never written to the audit log;
+- MCP servers: POST /{id}/discover copies the server's tools into the whitelist (new ones disabled);
+  an OAuth connection is authorized with POST /connections/{id}/oauth/start (WP5).
 Who may *use* a capability is set in the permission matrix (/admin/rbac, resource_type "capability").
 """
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from postgrest.exceptions import APIError
 
 from api.deps import get_access, require
 from capabilities import health, native, prompt_tools, registry, secrets
+from capabilities.gateway import CapabilityError
+from capabilities.mcp import oauth
+from capabilities.mcp import runtime as mcp_runtime
+from capabilities.mcp.transport import Target
+from core.security import normalize_origin, origin_allowed
 from capabilities.catalog import AUTH_TYPES, CREATABLE_KINDS, DATA_CLASSES, KINDS, RISKS, data_class_rank
 from models.capabilities import (
-    CapabilityCreate, CapabilityUpdate, ConnectionCreate, ConnectionUpdate, OperationCreate, OperationUpdate,
-    SecretSet,
+    CapabilityCreate, CapabilityUpdate, ConnectionCreate, ConnectionUpdate, OAuthStart, OperationCreate,
+    OperationUpdate, SecretSet,
 )
 from rbac import audit
 from rbac.model import Access
@@ -193,6 +200,23 @@ def delete_endpoint(capability_id: uuid.UUID, claims: dict = Depends(require_cap
     audit.record(claims, "capability.delete", "capability", capability["key"], details={"kind": capability["kind"]})
 
 
+@router.post("/{capability_id}/discover")
+async def discover_endpoint(capability_id: uuid.UUID, claims: dict = Depends(require_capabilities_admin)):
+    """MCP: reads the server's tool list into the whitelist. New tools start disabled and not read-only;
+    a whitelisted tool whose description or schema changed upstream, or that disappeared, is disabled.
+    The server's own read-only/destructive hints come back in `hints`, for the admin to judge."""
+    capability = capability_or_404(capability_id)
+    if capability["kind"] != "mcp":
+        raise HTTPException(status_code=400, detail="Solo los servidores MCP tienen descubrimiento.")
+    try:
+        report = await mcp_runtime.discover(capability, by(claims))
+    except CapabilityError as e:
+        raise HTTPException(status_code=502, detail=e.message) from None
+    audit.record(claims, "capability.discover", "capability", capability["key"],
+                 details={k: v for k, v in report.items() if k != "hints"})
+    return report
+
+
 # --- Operations (the whitelist) ---------------------------------------------------------------------------
 
 
@@ -347,6 +371,37 @@ def delete_connection_endpoint(connection_id: uuid.UUID, claims: dict = Depends(
     connection = connection_or_404(connection_id)
     registry.delete_connection(connection_id)
     audit.record(claims, "connection.delete", "connection", connection_id, details={"name": connection["name"]})
+
+
+@router.post("/connections/{connection_id}/oauth/start")
+async def oauth_start_endpoint(
+    connection_id: uuid.UUID, request: OAuthStart, http_request: Request,
+    claims: dict = Depends(require_capabilities_admin),
+):
+    """Starts the OAuth consent of an MCP server's connection (auth_type "oauth"). Open the returned
+    authorization_url in a popup; when the admin consents, the provider redirects to
+    /admin/capabilities/oauth/callback, which stores the tokens and posts {"type": "mcp-oauth-callback",
+    "connection_id", "status", "error"} to the window that called this (its Origin). connected=true:
+    the server needed no consent."""
+    connection = connection_or_404(connection_id)
+    if connection["auth_type"] != "oauth":
+        raise HTTPException(status_code=400, detail="La conexión no es de tipo OAuth.")
+    capability = capability_or_404(connection["capability_id"])
+    transport_kind = (capability.get("config") or {}).get("transport", "streamable_http")
+    if capability["kind"] != "mcp" or transport_kind != "streamable_http":
+        raise HTTPException(status_code=400, detail="OAuth solo se usa con servidores MCP por HTTP.")
+    if not secrets.configured():
+        raise HTTPException(status_code=503, detail="Falta CAPABILITY_SECRET_KEY: no se pueden guardar los tokens.")
+    origin = http_request.headers.get("origin")
+    opener = normalize_origin(origin) if origin and origin_allowed(origin) else None
+    try:
+        url = await oauth.start(Target(registry._capability(capability), connection), opener, claims,
+                                request.client_id, request.client_secret)
+    except CapabilityError as e:
+        raise HTTPException(status_code=502, detail=e.message) from None
+    audit.record(claims, "connection.oauth_start", "connection", connection_id,
+                 details={"capability": capability["key"], "client": "manual" if request.client_id else "registered"})
+    return {"authorization_url": url, "connected": url is None}
 
 
 @router.post("/connections/{connection_id}/check")

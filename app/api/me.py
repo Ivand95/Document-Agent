@@ -12,6 +12,14 @@ log = logging.getLogger("main")
 router = APIRouter(prefix="/me")
 
 
+@router.get("/mcps")
+def my_mcps(access: Access = Depends(get_access)):
+    """The MCP servers this user can use, for the chat's on/off switches (all on at the start of a
+    conversation). Switch them off per conversation: WebSocket frame {"type": "mcp_toggle"}, or
+    `disabled_mcps` in POST /chat."""
+    return {"mcps": gateway.session_toggles(access)}
+
+
 @router.get("/permissions")
 def my_permissions(access: Access = Depends(get_access)):
     """Roles, agents, admin areas, document categories and capabilities this user may use. The UI uses it

@@ -15,6 +15,10 @@ so a forged tool call fails too. Calls then run with a timeout and an output cap
 as untrusted data, and the call is written to the audit log (operation and arguments, never the output).
 Kinds that send their arguments to a model (prompt tools) also get `input_data_class`, the most
 restricted class of data in the arguments, and refuse what their model may not receive.
+
+In a chat, the user can switch off, for that conversation only, MCP servers they were given
+(`session_off`, a set of capability keys): they leave the tool list and their calls are refused. Only
+MCP servers can be switched off this way for now (SESSION_TOGGLE_KINDS); other keys are ignored.
 """
 import asyncio
 import hashlib
@@ -59,6 +63,7 @@ MESSAGES = {
     "model": "El modelo de esa herramienta no está disponible.",
     "too_large": "La entrada es demasiado larga para esa herramienta.",
     "bad_output": "La herramienta devolvió una respuesta no válida.",
+    "session_off": "Desactivaste esa herramienta en esta conversación.",
     "timeout": "La herramienta tardó demasiado en responder.",
     "failed": "La herramienta falló. Intenta de nuevo más tarde.",
 }
@@ -76,7 +81,13 @@ class CapabilityError(Exception):
 
 # Codes that mean "not allowed" (audited as denied); the rest are errors
 DENIED = ("not_found", "disabled", "denied", "not_whitelisted", "not_read_only", "bad_arguments", "reader",
-          "data_class", "model", "too_large")
+          "data_class", "model", "too_large", "session_off")
+# Kinds a user may switch off for one chat
+SESSION_TOGGLE_KINDS = ("mcp",)
+
+
+def switched_off(capability: Capability, session_off) -> bool:
+    return bool(session_off) and capability.kind in SESSION_TOGGLE_KINDS and capability.key in session_off
 
 
 @dataclass(frozen=True)
@@ -188,14 +199,15 @@ def _model_schema(schema: dict) -> dict:
     return schema
 
 
-def tools_for(access: Access, reader: str | None = None) -> list[ToolSpec]:
+def tools_for(access: Access, reader: str | None = None, session_off=frozenset()) -> list[ToolSpec]:
     """Every operation this user may call now, for the model's tool list. With `reader` (the model that
-    will read the outputs, "provider:model"), only tools whose data that model may read."""
+    will read the outputs, "provider:model"), only tools whose data that model may read. MCP servers in
+    `session_off` (switched off in this chat) are left out."""
     snap = registry.snapshot()
     specs, taken = [], set()
     for key in sorted(snap.capabilities):
         capability = snap.capabilities[key]
-        if capability.kind not in EXECUTORS:
+        if capability.kind not in EXECUTORS or switched_off(capability, session_off):
             continue
         for op in capability.operations:
             try:
@@ -209,6 +221,16 @@ def tools_for(access: Access, reader: str | None = None) -> list[ToolSpec]:
                 data_class=capability.data_class,
             ))
     return specs
+
+
+def session_toggles(access: Access, session_off=frozenset()) -> list[dict]:
+    """The MCP servers this user can use now (enabled, granted, with at least one tool they may call),
+    and whether each is on in this chat: what the chat's on/off switches show."""
+    snap = registry.snapshot()
+    keys = sorted({spec.capability_key for spec in tools_for(access)
+                   if snap.capabilities[spec.capability_key].kind in SESSION_TOGGLE_KINDS})
+    return [{"key": k, "name": snap.capabilities[k].name, "description": snap.capabilities[k].description,
+             "enabled": k not in session_off} for k in keys]
 
 
 def allowed_capabilities(access: Access) -> list[str]:
@@ -280,7 +302,7 @@ def audit_args(op: Operation, args: dict) -> dict:
 
 
 async def call(access: Access, claims: dict, capability_key: str, operation: str, args, *,
-               input_data_class: str = "sensitive", reader: str | None = None) -> CallResult:
+               input_data_class: str = "sensitive", reader: str | None = None, session_off=frozenset()) -> CallResult:
     """Runs one operation for the user, or raises CapabilityError. Every outcome is audited.
 
     input_data_class: the most restricted class of data in `args` (the caller knows where they came from;
@@ -291,6 +313,8 @@ async def call(access: Access, claims: dict, capability_key: str, operation: str
         data_class_rank(input_data_class)  # ValueError on a typo: a bug in the caller, not a refusal
         authorized = authorize(access, capability_key, operation, reader=reader)
         capability, op = authorized.capability, authorized.operation
+        if switched_off(capability, session_off):
+            raise CapabilityError("session_off", capability_key)
         details["args"] = audit_args(op, validate_args(op, args))
         executor = EXECUTORS.get(capability.kind)
         if executor is None:

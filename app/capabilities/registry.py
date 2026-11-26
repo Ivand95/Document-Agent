@@ -329,6 +329,16 @@ def set_secret(connection: dict, secret: dict, by: str) -> dict | None:
     return _public_connection(rows[0]) if rows else None
 
 
+def store_secret(connection_id, secret: dict) -> None:
+    """Replaces the secret without touching the connection's status: for credentials the app renews
+    itself (OAuth tokens after a refresh). Values must be text."""
+    if not secret or any(not isinstance(k, str) or not isinstance(v, str) for k, v in secret.items()):
+        raise ValueError("El secreto debe ser un objeto de textos")
+    _db().table("connections").update({
+        "secret_ciphertext": secrets.encrypt(secret), "secret_updated_at": _now(),
+    }).eq("id", str(connection_id)).execute()
+
+
 def clear_secret(connection_id, by: str) -> dict | None:
     rows = _db().table("connections").update({
         "secret_ciphertext": None, "secret_updated_at": None, "updated_at": _now(), "updated_by": by,
