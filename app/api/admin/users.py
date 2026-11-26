@@ -23,7 +23,7 @@ from postgrest.exceptions import APIError
 from api.deps import get_access, require, require_any
 from core.config import _plain
 from models.rbac import RoleAssign
-from models.users import AdminDepartmentRequest, UserStatusRequest
+from models.users import AdminDepartmentRequest, UserSearchRequest, UserStatusRequest
 from rbac import audit
 from rbac import service as rbac
 from rbac.catalog import SUPER_ADMIN
@@ -58,16 +58,14 @@ def user_in_scope(user_id, scope: admin_scope.Scope) -> dict:
     return profile
 
 
-@router.get("")
-async def list_users_endpoint(
-    status: Literal["active", "pending", "disabled"] | None = None,
-    q: str | None = Query(None, max_length=200),
-    department: str | None = Query(None, max_length=100),
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    _claims: dict = Depends(require_users_admin),
-    actor: Access = Depends(get_access),
-):
+async def list_users(
+    actor: Access,
+    status: str | None,
+    q: str | None,
+    department: str | None,
+    limit: int,
+    offset: int,
+) -> dict:
     """Users in the admin's scope, most recent login first. `q` searches name and email; `department`
     compares without accents or case. Returns the page, the total, the count per status for the same
     search (for the status filters), the departments the admin can filter by, and, for each user,
@@ -87,6 +85,30 @@ async def list_users_endpoint(
         }
 
     return await asyncio.to_thread(run)
+
+
+@router.get("")
+async def list_users_endpoint(
+    status: Literal["active", "pending", "disabled"] | None = None,
+    department: str | None = Query(None, max_length=100),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    _claims: dict = Depends(require_users_admin),
+    actor: Access = Depends(get_access),
+):
+    """Users in the admin's scope, without a text search (see list_users). To search by name or email
+    use POST /admin/users/search, which keeps the search text out of the URL (and the access logs)."""
+    return await list_users(actor, status, None, department, limit, offset)
+
+
+@router.post("/search")
+async def search_users_endpoint(
+    request: UserSearchRequest,
+    _claims: dict = Depends(require_users_admin),
+    actor: Access = Depends(get_access),
+):
+    """Same answer as GET /admin/users, with the filters (and the `q` search on name and email) in the body."""
+    return await list_users(actor, request.status, request.q, request.department, request.limit, request.offset)
 
 
 @router.get("/{user_id}")

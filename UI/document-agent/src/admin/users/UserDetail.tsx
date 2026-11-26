@@ -12,6 +12,7 @@ import { PROTECTED_LABELS, STATUS_LABELS, STATUS_TONES, displayName } from "./us
 import { UserActivityTab } from "./UserActivityTab";
 import { UserRolesTab } from "./UserRolesTab";
 import { UserStatusTab } from "./UserStatusTab";
+import { usersStateQ } from "./usersSearch";
 import "./users.css";
 
 type DetailTab = "status" | "roles" | "activity";
@@ -22,8 +23,9 @@ export const UserDetail = () => {
   const canAudit = visibleAreas(permissions.admin_areas).some((area) => area.id === "audit");
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
-  /** The list's filters when coming from it (UsersList passes them as state) */
+  /** The list's URL filters and search text when coming from it (UsersList passes them as state) */
   const listSearch = (location.state as { from?: string } | null)?.from ?? "";
+  const listQ = usersStateQ(location.state);
   const requestedTab = searchParams.get("tab");
   const tab: DetailTab =
     requestedTab === "roles" ? "roles" : requestedTab === "activity" && canAudit ? "activity" : "status";
@@ -62,7 +64,7 @@ export const UserDetail = () => {
   const currentFailure = failure?.id === id ? failure : null;
 
   const back = (
-    <Link to={`/admin/users${listSearch}`} className="admin-back-link">
+    <Link to={`/admin/users${listSearch}`} state={listQ ? { q: listQ } : null} className="admin-back-link">
       <ArrowBack fontSize="small" /> Usuarios
     </Link>
   );

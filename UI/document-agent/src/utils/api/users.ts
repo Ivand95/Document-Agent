@@ -43,8 +43,9 @@ export interface UsersQuery {
   offset?: number;
 }
 
+/** POST /admin/users/search: the query (free text included) travels in the body, never in the URL. */
 export const listUsers = (token: string, query: UsersQuery = {}, signal?: AbortSignal) =>
-  http.get<UsersPage>("/admin/users", { ...bearer(token), params: query, signal });
+  http.post<UsersPage>("/admin/users/search", query, { ...bearer(token), signal });
 
 /** GET /admin/users/{id}: the list row plus a few profile fields. */
 export interface UserDetail extends UserRow {

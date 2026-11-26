@@ -6,6 +6,7 @@ import {
   isValidDay,
   localDayStartIso,
   parseAuditSearch,
+  toAuditHistoryState,
   toAuditQuery,
   toAuditSearchParams,
   type AuditSearch,
@@ -26,7 +27,14 @@ describe("parseAuditSearch", () => {
     expect(search).toEqual(EMPTY_AUDIT_SEARCH);
   });
 
-  it("round-trips through the URL", () => {
+  it("reads the user's name from the history state, only with a user filter", () => {
+    expect(parseAuditSearch(new URLSearchParams("user_id=u1"), { userLabel: "Ana" }).userLabel).toBe("Ana");
+    expect(parseAuditSearch(new URLSearchParams(), { userLabel: "Ana" }).userLabel).toBe("");
+    expect(parseAuditSearch(new URLSearchParams("user_id=u1"), { userLabel: 3 }).userLabel).toBe("");
+    expect(parseAuditSearch(new URLSearchParams("user_id=u1&user_label=Ana")).userLabel).toBe("");
+  });
+
+  it("round-trips through the URL and the history state", () => {
     const search: AuditSearch = {
       range: "custom",
       since: "2026-11-01",
@@ -38,7 +46,7 @@ describe("parseAuditSearch", () => {
       resourceId: "u2",
       page: 3,
     };
-    expect(parseAuditSearch(toAuditSearchParams(search))).toEqual(search);
+    expect(parseAuditSearch(toAuditSearchParams(search), toAuditHistoryState(search))).toEqual(search);
   });
 });
 
@@ -47,9 +55,22 @@ describe("toAuditSearchParams", () => {
     expect(toAuditSearchParams(EMPTY_AUDIT_SEARCH).toString()).toBe("");
   });
 
-  it("keeps the custom days only with the custom range, and the label only with a user", () => {
-    const params = toAuditSearchParams({ ...EMPTY_AUDIT_SEARCH, range: "7d", since: "2026-11-01", userLabel: "Ana" });
+  it("keeps the custom days only with the custom range", () => {
+    const params = toAuditSearchParams({ ...EMPTY_AUDIT_SEARCH, range: "7d", since: "2026-11-01" });
     expect(params.toString()).toBe("range=7d");
+  });
+
+  it("never writes the user's name", () => {
+    const params = toAuditSearchParams({ ...EMPTY_AUDIT_SEARCH, userId: "u1", userLabel: "Ana Pérez" });
+    expect(params.toString()).toBe("user_id=u1");
+  });
+});
+
+describe("toAuditHistoryState", () => {
+  it("keeps the user's name only while that user is filtered", () => {
+    expect(toAuditHistoryState({ ...EMPTY_AUDIT_SEARCH, userId: "u1", userLabel: "Ana" })).toEqual({ userLabel: "Ana" });
+    expect(toAuditHistoryState({ ...EMPTY_AUDIT_SEARCH, userLabel: "Ana" })).toBeNull();
+    expect(toAuditHistoryState({ ...EMPTY_AUDIT_SEARCH, userId: "u1" })).toBeNull();
   });
 });
 

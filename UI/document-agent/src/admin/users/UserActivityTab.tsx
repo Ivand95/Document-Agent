@@ -5,7 +5,12 @@ import type { UserDetail } from "../../utils/api/users";
 import { useAdmin } from "../adminContext";
 import { visibleAreas } from "../areas";
 import { AuditTable } from "../audit/AuditTable";
-import { EMPTY_AUDIT_SEARCH, toAuditSearchParams, type AuditSearch } from "../audit/auditSearch";
+import {
+  EMPTY_AUDIT_SEARCH,
+  toAuditHistoryState,
+  toAuditSearchParams,
+  type AuditSearch,
+} from "../audit/auditSearch";
 import { useAuditEntries } from "../audit/useAuditEntries";
 import { displayName } from "./userLabels";
 
@@ -23,6 +28,7 @@ export const UserActivityTab = ({ user }: { user: UserDetail }) => {
       : { ...EMPTY_AUDIT_SEARCH, userId: user.id, userLabel: displayName(user), page };
   const { entries, loading, error, reload } = useAuditEntries(token, toAuditSearchParams(search).toString());
   const openAreas = visibleAreas(permissions.admin_areas).map((area) => area.id);
+  // The user's name travels as history state, never in the URL
   const auditLink = `/admin/audit?${toAuditSearchParams({ ...search, page: 1 }).toString()}`;
 
   return (
@@ -40,7 +46,7 @@ export const UserActivityTab = ({ user }: { user: UserDetail }) => {
           <Tab value="about" label="Cambios sobre este usuario" />
           <Tab value="by" label="Acciones de este usuario" />
         </Tabs>
-        <Link to={auditLink} className="admin-link">
+        <Link to={auditLink} state={toAuditHistoryState(search)} className="admin-link">
           Abrir en Auditoría
         </Link>
       </div>

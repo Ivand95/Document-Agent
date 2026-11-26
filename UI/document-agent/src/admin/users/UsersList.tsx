@@ -10,6 +10,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DataTable, type Column } from "../components/DataTable";
 import { RelativeTime } from "../components/RelativeTime";
 import { StatusBadge } from "../components/StatusBadge";
+import { useDropUrlParams } from "../legacyParams";
 import { ACTION_LABELS, PROTECTED_LABELS, STATUS_LABELS, STATUS_TONES, displayName } from "./userLabels";
 import {
   STATUS_TABS,
@@ -18,7 +19,9 @@ import {
   fixedDepartment,
   parseUsersSearch,
   toSearchParams,
+  toUsersListState,
   toUsersQuery,
+  usersStateQ,
   type StatusTab,
   type UsersSearch,
 } from "./usersSearch";
@@ -26,6 +29,14 @@ import { useStatusChange } from "./useStatusChange";
 import "./users.css";
 
 const SEARCH_DELAY_MS = 300;
+/** Params older versions put in the URL; the search text now lives in the history state. */
+const LEGACY_URL_PARAMS = ["q"] as const;
+
+/** State for a user's detail: the list's URL filters and its search text, so "← Usuarios" restores both. */
+const detailLinkState = (location: { search: string; state: unknown }) => ({
+  from: location.search,
+  q: usersStateQ(location.state),
+});
 
 const RowActions = ({
   user,
@@ -95,7 +106,7 @@ const RowActions = ({
         <MenuItem
           onClick={() => {
             close();
-            navigate(`/admin/users/${user.id}`, { state: { from: location.search } });
+            navigate(`/admin/users/${user.id}`, { state: detailLinkState(location) });
           }}
         >
           Ver detalle
@@ -108,12 +119,14 @@ const RowActions = ({
 export const UsersList = () => {
   const { token, refreshSummary } = useAdmin();
   const [searchParams, setSearchParams] = useSearchParams();
-  const queryKey = searchParams.toString();
-  const search = parseUsersSearch(searchParams);
-
   const location = useLocation();
+  // status/department/page come from the URL, q from the history state (it must never reach a URL);
+  // an old bookmark's ?q= is ignored and removed from the address bar
+  useDropUrlParams(LEGACY_URL_PARAMS);
+  const search = parseUsersSearch(searchParams, location.state);
+  const queryKey = JSON.stringify(search);
 
-  /** What the user is typing, until it's committed to the URL; null: the input shows the URL's q */
+  /** What the user is typing, until it's committed to the history state; null: the input shows its q */
   const [draft, setDraft] = useState<string | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [data, setData] = useState<UsersPage | null>(null);
@@ -129,7 +142,8 @@ export const UsersList = () => {
     clearTimeout(searchTimer.current);
     const pendingQ = draft !== null ? { q: draft } : {};
     if (draft !== null) setDraft(null);
-    setSearchParams(toSearchParams({ ...search, page: 1, ...pendingQ, ...patch }), { replace });
+    const next: UsersSearch = { ...search, page: 1, ...pendingQ, ...patch };
+    setSearchParams(toSearchParams(next), { replace, state: toUsersListState(next) });
   };
 
   // Timers and responses call the latest render's update (its search and draft are current)
@@ -140,7 +154,7 @@ export const UsersList = () => {
 
   useEffect(() => {
     const controller = new AbortController();
-    const current = parseUsersSearch(new URLSearchParams(queryKey));
+    const current = JSON.parse(queryKey) as UsersSearch;
     listUsers(token, toUsersQuery(current), controller.signal)
       .then(({ data: page }) => {
         if (controller.signal.aborted) return;
@@ -190,7 +204,7 @@ export const UsersList = () => {
       header: "Nombre",
       render: (user) => (
         <div className="admin-user-cell">
-          <Link to={`/admin/users/${user.id}`} state={{ from: location.search }} className="admin-link">
+          <Link to={`/admin/users/${user.id}`} state={detailLinkState(location)} className="admin-link">
             {displayName(user)}
           </Link>
           <small>{user.email ?? "—"}</small>

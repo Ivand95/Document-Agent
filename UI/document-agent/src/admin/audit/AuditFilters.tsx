@@ -69,7 +69,7 @@ interface AuditFiltersProps {
   /** Changes some filters (the page goes back to 1). replace: no new history entry */
   onChange: (patch: Partial<AuditSearch>, options?: { replace?: boolean }) => void;
   token: string;
-  /** The user picker searches GET /admin/users: only with the Usuarios area */
+  /** The user picker searches POST /admin/users/search: only with the Usuarios area */
   canPickUser: boolean;
 }
 

@@ -224,12 +224,13 @@ class EndpointAccessTest(unittest.TestCase):
         from starlette.websockets import WebSocketDisconnect
 
         for path in ("/ws/chat", "/ws/chat/audio"):
-            for query in ("", "?token=forged"):
-                with self.assertRaises(Exception) as ctx:
-                    with self.client.websocket_connect(path + query):
-                        pass
-                self.assertTrue(ctx.exception is not None, path)
-            self.assertTrue(issubclass(WebSocketDisconnect, Exception))
+            for first in ({"message": "hola"}, {"type": "auth"}, {"type": "auth", "token": "forged"}):
+                with self.client.websocket_connect(path) as ws:
+                    ws.send_json(first)
+                    self.assertEqual(ws.receive_json(), {"type": "error", "content": chat.SESSION_EXPIRED})
+                    with self.assertRaises(WebSocketDisconnect) as ctx:
+                        ws.receive_json()
+                self.assertEqual(ctx.exception.code, 1008, path)
 
     def test_department_and_position_come_from_the_token_never_from_the_request(self):
         captured = {}

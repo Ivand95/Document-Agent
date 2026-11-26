@@ -18,8 +18,10 @@ import { useMyPermissions } from "../utils/permissions";
 import {
   audioAgentWebSocket,
   documentAgentWebSocket,
+  wsAuthFrame,
   logoutSession,
 } from "../utils/axios";
+import { socketClosedNotice, WS_STATUS_LABELS, type WsStatus } from "./socketStatus";
 import "./style.css";
 
 type MessageRole = "user" | "assistant";
@@ -69,7 +71,7 @@ interface AgentDef {
   hint: string;
   suggestions: string[];
   icon: React.ReactNode;
-  connect: (token: string) => WebSocket;
+  connect: () => WebSocket;
 }
 
 const AGENTS: AgentDef[] = [
@@ -250,12 +252,12 @@ const WelcomeScreen = ({
 const AgentSelector = ({
   agents,
   currentAgentId,
-  wsConnected,
+  wsStatus,
   onSelect,
 }: {
   agents: AgentDef[];
   currentAgentId: AgentId;
-  wsConnected: boolean;
+  wsStatus: WsStatus;
   onSelect: (id: AgentId) => void;
 }) => {
   const [open, setOpen] = useState(false);
@@ -304,13 +306,13 @@ const AgentSelector = ({
           <span className="agent-selector-name">{current.name}</span>
           <span
             className={`agent-selector-status ${
-              wsConnected
+              wsStatus === "online"
                 ? "agent-selector-status--online"
                 : "agent-selector-status--offline"
             }`}
           >
             <span className="agent-selector-dot" aria-hidden />
-            {wsConnected ? "En línea" : "Conectando…"}
+            {WS_STATUS_LABELS[wsStatus]}
           </span>
         </span>
         <KeyboardArrowDown
@@ -522,7 +524,8 @@ export const Chat = (props: {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [thinking, setThinking] = useState(false);
   const navigate = useNavigate();
-  const [wsConnected, setWsConnected] = useState(false);
+  const [wsStatus, setWsStatus] = useState<WsStatus>("connecting");
+  const wsConnected = wsStatus === "online";
   const wsRef = useRef<WebSocket | null>(null);
   const tokenRef = useRef(props.userInfo.access_token);
   const [agentId, setAgentId] = useState<AgentId>("document");
@@ -538,7 +541,7 @@ export const Chat = (props: {
   if (!agents.some((a) => a.id === agentId)) {
     setMessages([]);
     setThinking(false);
-    setWsConnected(false);
+    setWsStatus("connecting");
     setAgentId("document");
   }
 
@@ -549,37 +552,50 @@ export const Chat = (props: {
 
   useEffect(() => {
     const agent = AGENTS.find((a) => a.id === agentId) ?? AGENTS[0];
-    const ws = agent.connect(tokenRef.current);
+    const ws = agent.connect();
     wsRef.current = ws;
 
-    ws.onopen = () => setWsConnected(true);
-    ws.onclose = () => setWsConnected(false);
+    // Errors arrive as plain text; show them like any other answer
+    const errorContent = (text: string) =>
+      ({
+        answer: text,
+        department_reference: "",
+        document_reference: "",
+        section_reference: "",
+        tags: "",
+      }) as documentMessageContent;
+    const addAssistantMessage = (content: Message["content"]) =>
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "assistant", content, timestamp: new Date() },
+      ]);
+
+    // Whether the server answered "ready", and whether its last frame was an error (a refusal is
+    // explained by an error frame right before the close)
+    let ready = false;
+    let explained = false;
+
+    // Authenticate with the first frame (never in the URL); usable only once the server answers "ready"
+    ws.onopen = () => ws.send(wsAuthFrame(tokenRef.current));
+    ws.onclose = (event: CloseEvent) => {
+      setWsStatus("closed");
+      setThinking(false);
+      const notice = socketClosedNotice({ ready, explained, code: event.code });
+      if (notice) addAssistantMessage(errorContent(notice));
+    };
     ws.onerror = (error: Event) => {
       console.error("WebSocket error", error);
-      setWsConnected(false);
     };
     ws.onmessage = (event: MessageEvent) => {
       const data = JSON.parse(event.data);
+      explained = data.type === "error";
+      if (data.type === "ready") {
+        ready = true;
+        setWsStatus("online");
+        return;
+      }
       if (data.type === "answer" || data.type === "error") {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            // Errors arrive as plain text; show them like any other answer
-            content:
-              data.type === "error"
-                ? ({
-                    answer: String(data.content),
-                    department_reference: "",
-                    document_reference: "",
-                    section_reference: "",
-                    tags: "",
-                  } as documentMessageContent)
-                : data.content,
-            timestamp: new Date(),
-          },
-        ]);
+        addAssistantMessage(data.type === "error" ? errorContent(String(data.content)) : data.content);
         setThinking(false);
       }
     };
@@ -604,7 +620,7 @@ export const Chat = (props: {
     tokenRef.current = props.userInfo.access_token;
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "auth", token: props.userInfo.access_token }));
+      ws.send(wsAuthFrame(props.userInfo.access_token));
     }
   }, [props.userInfo.access_token]);
 
@@ -624,7 +640,7 @@ export const Chat = (props: {
     if (next === agentId) return;
     setMessages([]);
     setThinking(false);
-    setWsConnected(false);
+    setWsStatus("connecting");
     setShowScrollDown(false);
     setAgentId(next);
   };
@@ -644,7 +660,7 @@ export const Chat = (props: {
   const submitMessage = () => {
     const trimmed = input.trim();
     if (!trimmed) return;
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (!wsConnected || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
     setMessages((prev) => [
       ...prev,
@@ -786,7 +802,7 @@ export const Chat = (props: {
               <AgentSelector
                 agents={agents}
                 currentAgentId={agentId}
-                wsConnected={wsConnected}
+                wsStatus={wsStatus}
                 onSelect={handleSelectAgent}
               />
               <button

@@ -4,18 +4,25 @@ import {
   fixedDepartment,
   parseUsersSearch,
   toSearchParams,
+  toUsersListState,
   toUsersQuery,
+  usersStateQ,
   type UsersSearch,
 } from "./usersSearch";
 
 describe("parseUsersSearch", () => {
-  it("reads every field", () => {
-    expect(parseUsersSearch(new URLSearchParams("status=disabled&q=ana&department=Marketing&page=3"))).toEqual({
+  it("reads the filters from the URL and the search text from the history state", () => {
+    expect(parseUsersSearch(new URLSearchParams("status=disabled&department=Marketing&page=3"), { q: "ana" })).toEqual({
       status: "disabled",
       q: "ana",
       department: "Marketing",
       page: 3,
     });
+  });
+
+  it("ignores a search text in the URL", () => {
+    expect(parseUsersSearch(new URLSearchParams("q=ana")).q).toBe("");
+    expect(parseUsersSearch(new URLSearchParams("q=ana"), { q: "luis" }).q).toBe("luis");
   });
 
   it("uses defaults for missing or invalid values", () => {
@@ -33,9 +40,29 @@ describe("toSearchParams", () => {
     expect(toSearchParams({ status: null, q: "", department: "", page: 1 }).toString()).toBe("");
   });
 
-  it("round-trips with parseUsersSearch", () => {
+  it("never writes the search text", () => {
+    const params = toSearchParams({ status: "all", q: "luis@example.com", department: "Comercial", page: 2 });
+    expect(params.has("q")).toBe(false);
+    expect(params.toString()).not.toContain("luis");
+  });
+
+  it("round-trips with parseUsersSearch together with the history state", () => {
     const search: UsersSearch = { status: "all", q: "luis", department: "Comercial", page: 2 };
-    expect(parseUsersSearch(toSearchParams(search))).toEqual(search);
+    expect(parseUsersSearch(toSearchParams(search), toUsersListState(search))).toEqual(search);
+  });
+});
+
+describe("history state", () => {
+  it("keeps only a non-empty search text", () => {
+    expect(toUsersListState({ status: null, q: "ana", department: "", page: 1 })).toEqual({ q: "ana" });
+    expect(toUsersListState({ status: null, q: "", department: "", page: 1 })).toBeNull();
+  });
+
+  it("reads q from any state shape", () => {
+    expect(usersStateQ({ from: "?status=all", q: "ana" })).toBe("ana");
+    expect(usersStateQ(null)).toBe("");
+    expect(usersStateQ(undefined)).toBe("");
+    expect(usersStateQ({ q: 3 })).toBe("");
   });
 });
 

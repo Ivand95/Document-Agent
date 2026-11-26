@@ -36,13 +36,13 @@ export const refreshSession = (token: string) =>
 export const logoutSession = (token: string) =>
   http.post("/auth/logout", null, bearer(token));
 
-export const documentAgentWebSocket = (token: string) => {
-  return new WebSocket(`${WS_URL}/ws/chat?token=${token}`);
-};
+/** First frame a chat socket must send once open: URLs end up in access logs, so the token never goes there. */
+export const wsAuthFrame = (token: string) => JSON.stringify({ type: "auth", token });
 
-export const audioAgentWebSocket = (token: string) => {
-  return new WebSocket(`${WS_URL}/ws/chat/audio?token=${token}`);
-};
+// The caller sends wsAuthFrame on open and treats the socket as usable only after {"type":"ready"}
+export const documentAgentWebSocket = () => new WebSocket(`${WS_URL}/ws/chat`);
+
+export const audioAgentWebSocket = () => new WebSocket(`${WS_URL}/ws/chat/audio`);
 
 // ---- Permissions (RBAC). The UI only uses them to choose what to show; the API enforces them ----
 

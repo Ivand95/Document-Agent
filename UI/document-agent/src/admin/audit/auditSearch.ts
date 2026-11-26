@@ -13,7 +13,8 @@ export const RANGES: { id: RangeId; label: string }[] = [
   { id: "custom", label: "Personalizado" },
 ];
 
-/** The audit filters, kept in the URL (spec §5.2). */
+/** The audit filters, kept in the URL (spec §5.2), except userLabel: a person's name never goes in a URL
+ * (URLs end up in access logs), so it lives in the browser's history state (AuditHistoryState). */
 export interface AuditSearch {
   range: RangeId;
   /** Custom range: local days "YYYY-MM-DD", both inclusive; "" leaves that end open */
@@ -22,7 +23,7 @@ export interface AuditSearch {
   category: CategoryId | "";
   /** Who acted */
   userId: string;
-  /** userId's name, carried in the URL only to show it in the chip */
+  /** userId's name, only to show it in the chip; from the history state, "" when unknown */
   userLabel: string;
   resourceType: string;
   resourceId: string;
@@ -64,18 +65,25 @@ export const localDayStartIso = (day: string, addDays = 0): string => {
   return new Date(y, m - 1, d + addDays).toISOString();
 };
 
-export const parseAuditSearch = (params: URLSearchParams): AuditSearch => {
+/** The audit page's history state (React Router location.state): survives reload and back/forward, never sent. */
+export interface AuditHistoryState {
+  userLabel?: string;
+}
+
+/** params: the URL's (an old user_label is ignored); state: location.state, where the user's name lives. */
+export const parseAuditSearch = (params: URLSearchParams, state?: unknown): AuditSearch => {
   const range = params.get("range");
   const category = params.get("category");
   const page = Number.parseInt(params.get("page") ?? "", 10);
   const userId = params.get("user_id") ?? "";
+  const userLabel = (state as AuditHistoryState | null)?.userLabel;
   return {
     range: RANGES.some((option) => option.id === range) ? (range as RangeId) : "all",
     since: validDay(params.get("since")),
     until: validDay(params.get("until")),
     category: isCategoryId(category) ? category : "",
     userId,
-    userLabel: userId ? (params.get("user_label") ?? "") : "",
+    userLabel: userId && typeof userLabel === "string" ? userLabel : "",
     resourceType: params.get("resource_type") ?? "",
     resourceId: params.get("resource_id") ?? "",
     page: Number.isFinite(page) && page > 0 ? page : 1,
@@ -90,15 +98,16 @@ export const toAuditSearchParams = (search: AuditSearch): URLSearchParams => {
     if (search.until) params.set("until", search.until);
   }
   if (search.category) params.set("category", search.category);
-  if (search.userId) {
-    params.set("user_id", search.userId);
-    if (search.userLabel) params.set("user_label", search.userLabel);
-  }
+  if (search.userId) params.set("user_id", search.userId);
   if (search.resourceType) params.set("resource_type", search.resourceType);
   if (search.resourceId) params.set("resource_id", search.resourceId);
   if (search.page > 1) params.set("page", String(search.page));
   return params;
 };
+
+/** The history-state part of the search: the user's name, only while that user is filtered. */
+export const toAuditHistoryState = (search: AuditSearch): AuditHistoryState | null =>
+  search.userId && search.userLabel ? { userLabel: search.userLabel } : null;
 
 /** The API query. Relative ranges are resolved against `now`, so call this when the request starts. */
 export const toAuditQuery = (search: AuditSearch, now: number = Date.now()): AuditQuery => {

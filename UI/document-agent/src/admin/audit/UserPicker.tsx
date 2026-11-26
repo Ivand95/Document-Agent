@@ -7,7 +7,7 @@ import { displayName } from "../users/userLabels";
 const SEARCH_DELAY_MS = 300;
 const MAX_OPTIONS = 10;
 
-/** Picks a user by name or email (GET /admin/users?q=, 300 ms after typing stops). Needs the Usuarios area. */
+/** Picks a user by name or email (POST /admin/users/search, 300 ms after typing stops). Needs the Usuarios area. */
 export const UserPicker = ({ token, onPick }: { token: string; onPick: (user: UserRow) => void }) => {
   const [input, setInput] = useState("");
   const [result, setResult] = useState<{ q: string; users: UserRow[] } | null>(null);
