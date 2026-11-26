@@ -56,5 +56,5 @@ export interface MyPermissions {
   capabilities: string[];
 }
 
-export const getMyPermissions = (token: string) =>
-  http.get<MyPermissions>("/me/permissions", bearer(token));
+export const getMyPermissions = (token: string, signal?: AbortSignal) =>
+  http.get<MyPermissions>("/me/permissions", { ...bearer(token), signal });

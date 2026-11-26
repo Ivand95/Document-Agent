@@ -9,6 +9,7 @@ import { listUsers, type UsersScope } from "../utils/api/users";
 import { useMyPermissions } from "../utils/permissions";
 import type { AdminContext } from "./adminContext";
 import { scopeLabel, visibleGroups } from "./areas";
+import { adminContainer } from "./components/adminContainer";
 import { ScopeChip } from "./components/ScopeChip";
 import "./style.css";
 
@@ -34,16 +35,16 @@ export const AdminLayout = ({ userInfo }: { userInfo: UserInfo }) => {
   // Pending-users badge and the admin's scope (a department admin's departments) in one small request
   useEffect(() => {
     if (!canUsers) return;
-    let cancelled = false;
-    listUsers(token, { status: "pending", limit: 1 })
+    const controller = new AbortController();
+    listUsers(token, { status: "pending", limit: 1 }, controller.signal)
       .then(({ data }) => {
-        if (!cancelled) setSummary({ pending: data.counts.pending, scope: data.scope });
+        if (!controller.signal.aborted) setSummary({ pending: data.counts.pending, scope: data.scope });
       })
       .catch(() => {
         // Optional: without it there is no badge and the chip says "Global"; the API still enforces the scope
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [token, canUsers, summaryKey]);
 
@@ -151,7 +152,7 @@ export const AdminLayout = ({ userInfo }: { userInfo: UserInfo }) => {
               variant="temporary"
               open={drawerOpen}
               onClose={() => setMenuOpen(false)}
-              container={() => document.querySelector<HTMLElement>(".admin-page")}
+              container={adminContainer}
               slotProps={{ paper: { className: "admin-sidebar admin-sidebar--drawer" } }}
               ModalProps={{ keepMounted: false }}
             >

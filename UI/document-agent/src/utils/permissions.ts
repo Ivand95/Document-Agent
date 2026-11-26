@@ -22,18 +22,18 @@ export const useMyPermissions = (token: string) => {
 
   useEffect(() => {
     if (!token) return;
-    let cancelled = false;
-    getMyPermissions(token)
+    const controller = new AbortController();
+    getMyPermissions(token, controller.signal)
       .then(({ data }) => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setPermissions(data);
         setFailed(false);
       })
       .catch(() => {
-        if (!cancelled) setFailed(true);
+        if (!controller.signal.aborted) setFailed(true);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [token, reloadKey]);
 

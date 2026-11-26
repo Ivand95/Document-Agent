@@ -1,5 +1,6 @@
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle } from "@mui/material";
 import { useId, type ReactNode } from "react";
+import { adminContainer } from "./adminContainer";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -30,7 +31,7 @@ export const ConfirmDialog = ({
     <Dialog
       open={open}
       onClose={busy ? undefined : onCancel}
-      container={() => document.querySelector<HTMLElement>(".admin-page")}
+      container={adminContainer}
       aria-labelledby={titleId}
       slotProps={{ paper: { className: "admin-dialog" } }}
     >

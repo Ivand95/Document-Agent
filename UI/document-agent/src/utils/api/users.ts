@@ -43,5 +43,63 @@ export interface UsersQuery {
   offset?: number;
 }
 
-export const listUsers = (token: string, query: UsersQuery = {}) =>
-  http.get<UsersPage>("/admin/users", { ...bearer(token), params: query });
+export const listUsers = (token: string, query: UsersQuery = {}, signal?: AbortSignal) =>
+  http.get<UsersPage>("/admin/users", { ...bearer(token), params: query, signal });
+
+/** GET /admin/users/{id}: the list row plus a few profile fields. */
+export interface UserDetail extends UserRow {
+  perm_version: number;
+  created_by: string;
+}
+
+export const getUser = (token: string, id: string, signal?: AbortSignal) =>
+  http.get<UserDetail>(`/admin/users/${id}`, { ...bearer(token), signal });
+
+export const setUserStatus = (token: string, id: string, status: UserStatus) =>
+  http.post<{ id: string; status: UserStatus }>(`/admin/users/${id}/status`, { status }, bearer(token));
+
+/** One role the user holds (or held by hand and expired), from GET /admin/users/{id}/roles. */
+export interface UserRole {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  manager_assignable: boolean;
+  /** "assigned", "department:<x>", "position_prefix:<x>", "everyone", "legacy:<env var>" */
+  sources: string[];
+  /** Comes (also) from a mapping: can't be removed here */
+  automatic: boolean;
+  /** Given by hand (even if expired) */
+  assigned: boolean;
+  expired: boolean;
+  granted_by: string | null;
+  granted_at: string | null;
+  expires_at: string | null;
+  /** The actor may remove it */
+  removable: boolean;
+}
+
+export interface AssignableRole {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+}
+
+export interface UserRolesView {
+  user_id: string;
+  /** true for admins with the rbac area; false: only manager-assignable roles are shown */
+  manage_all_roles: boolean;
+  roles: UserRole[];
+  /** Roles the actor may give this user (empty when the user is protected) */
+  assignable: AssignableRole[];
+}
+
+export const getUserRoles = (token: string, id: string, signal?: AbortSignal) =>
+  http.get<UserRolesView>(`/admin/users/${id}/roles`, { ...bearer(token), signal });
+
+export const assignUserRole = (token: string, id: string, body: { role_id: string; expires_at: string | null }) =>
+  http.post<UserRolesView>(`/admin/users/${id}/roles`, body, bearer(token));
+
+export const removeUserRole = (token: string, id: string, roleId: string) =>
+  http.delete<UserRolesView>(`/admin/users/${id}/roles/${roleId}`, bearer(token));

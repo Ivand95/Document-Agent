@@ -16,6 +16,9 @@ const Chat = lazy(() => import('./chat/chat').then((m) => ({ default: m.Chat }))
 
 const AdminLayout = lazy(() => import('./admin/AdminLayout').then((m) => ({ default: m.AdminLayout })))
 const IngestionPage = lazy(() => import('./admin/ingestion/IngestionPage').then((m) => ({ default: m.IngestionPage })))
+const UsersList = lazy(() => import('./admin/users/UsersList').then((m) => ({ default: m.UsersList })))
+const UserDetail = lazy(() => import('./admin/users/UserDetail').then((m) => ({ default: m.UserDetail })))
+const AuditPage = lazy(() => import('./admin/audit/AuditPage').then((m) => ({ default: m.AuditPage })))
 
 const STORAGE_KEY = 'document-agent-user'
 const EMPTY_USER: UserInfo = { access_token: '', name: '', email: '', department: '' }
@@ -105,6 +108,30 @@ function App() {
               element={
                 <RequireArea area="ingestion">
                   <IngestionPage />
+                </RequireArea>
+              }
+            />
+            <Route
+              path="users"
+              element={
+                <RequireArea area="users">
+                  <UsersList />
+                </RequireArea>
+              }
+            />
+            <Route
+              path="users/:id"
+              element={
+                <RequireArea area="users">
+                  <UserDetail />
+                </RequireArea>
+              }
+            />
+            <Route
+              path="audit"
+              element={
+                <RequireArea area="audit">
+                  <AuditPage />
                 </RequireArea>
               }
             />

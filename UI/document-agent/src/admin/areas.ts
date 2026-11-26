@@ -35,7 +35,7 @@ export const AREAS: AreaDef[] = [
 ];
 
 /** Areas whose screens exist in this build. Each implementation phase adds its own. */
-export const IMPLEMENTED: ReadonlySet<AdminArea> = new Set<AdminArea>(["ingestion"]);
+export const IMPLEMENTED: ReadonlySet<AdminArea> = new Set<AdminArea>(["ingestion", "users", "audit"]);
 
 export const visibleAreas = (
   adminAreas: readonly string[],

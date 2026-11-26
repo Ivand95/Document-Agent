@@ -1,0 +1,76 @@
+.admin-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.admin-filters .admin-input {
+  width: auto;
+  min-width: 220px;
+}
+
+.admin-user-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-user-cell small {
+  font-size: 0.75rem;
+  color: var(--chat-text-muted);
+}
+
+.admin-row--muted td {
+  opacity: 0.6;
+}
+
+.admin-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.admin-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 0.8125rem;
+  color: var(--admin-link);
+  text-decoration: none;
+}
+
+.admin-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-detail-head h2 {
+  margin: 0 0 4px;
+}
+
+.admin-detail-badges {
+  display: flex;
+  gap: 6px;
+}
+
+.admin-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 16px 0 0;
+  font-size: 0.875rem;
+}
+
+.admin-facts dt {
+  color: var(--chat-text-muted);
+}
+
+.admin-facts dd {
+  margin: 0;
+}

@@ -1,0 +1,139 @@
+.admin-status {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+}
+
+.admin-status--ok {
+  color: #3f9d5b;
+}
+
+.admin-status--warn {
+  color: #b7791f;
+}
+
+.admin-status--error {
+  color: #d9534f;
+}
+
+.admin-status--muted {
+  color: var(--chat-text-muted);
+}
+
+.admin-table-wrap--full {
+  max-height: none;
+}
+
+.admin-table-wrap--loading {
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
+.admin-table-empty {
+  padding: 24px 12px !important;
+  text-align: center !important;
+  color: var(--chat-text-muted);
+}
+
+.admin-col-actions {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right !important;
+}
+
+.admin-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.admin-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---- Form fields ---- */
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+  font-size: 0.8125rem;
+}
+
+.admin-field-hint {
+  font-size: 0.75rem;
+  color: var(--chat-text-muted);
+}
+
+.admin-input {
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  color: var(--chat-text);
+  background: var(--chat-bg);
+  border: 1px solid var(--chat-border);
+  border-radius: 6px;
+}
+
+.admin-input:focus {
+  outline: 2px solid var(--admin-link);
+  outline-offset: 1px;
+}
+
+/* ---- Tabs (MUI) in the brand colour ---- */
+.admin-page .admin-tabs {
+  min-height: 40px;
+  margin: 4px 0 12px;
+  border-bottom: 1px solid var(--chat-border);
+}
+
+.admin-page .admin-tabs .MuiTab-root {
+  min-height: 40px;
+  text-transform: none;
+  color: var(--chat-text-muted);
+}
+
+.admin-page .admin-tabs .MuiTab-root.Mui-selected {
+  color: var(--chat-text);
+  font-weight: 600;
+}
+
+.admin-page .admin-tabs .MuiTabs-indicator {
+  background-color: var(--admin-link);
+}
+
+/* ---- Menus (MUI, mounted in .admin-page) ---- */
+.admin-menu {
+  color: var(--chat-text) !important;
+  background: var(--chat-surface-elevated) !important;
+  border: 1px solid var(--chat-border);
+}
+
+/* ---- Error buttons: style.css paints text/outlined buttons in the brand colour ---- */
+.admin-page .admin-content .MuiButton-root.MuiButton-textError,
+.admin-page .admin-content .MuiButton-root.MuiButton-outlinedError,
+.admin-page .admin-dialog .MuiButton-root.MuiButton-textError {
+  color: #d9534f;
+}
+
+.admin-page .admin-content .MuiButton-root.MuiButton-outlinedError {
+  border-color: #d9534f;
+}
+
+/* ---- DataTable: expanded row ---- */
+.admin-row-expanded td {
+  padding: 10px 16px 14px 48px;
+  background: var(--chat-hover);
+}

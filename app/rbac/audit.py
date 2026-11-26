@@ -41,14 +41,20 @@ def record(claims, action: str, resource_type=None, resource_id=None, outcome: s
 
 def list_entries(
     user_id=None, action=None, resource_type=None, resource_id=None, since=None, until=None,
-    limit: int = 100, offset: int = 0,
+    limit: int = 100, offset: int = 0, action_prefixes: list[str] | None = None,
 ) -> list[dict]:
-    """Newest first."""
+    """Newest first. action_prefixes: keep the entries whose action starts with any of them.
+
+    The caller validates the prefixes (lowercase letters, "_" and a final "."). In LIKE, "_" matches any one
+    character, so "prompt_tool." would also match "promptXtool.": no such action exists.
+    """
     query = _db().table("audit_log").select("*")
     if user_id:
         query = query.eq("user_id", str(user_id))
     if action:
         query = query.eq("action", action)
+    if action_prefixes:
+        query = query.or_(",".join(f'action.like."{prefix}*"' for prefix in action_prefixes))
     if resource_type:
         query = query.eq("resource_type", resource_type)
     if resource_id:
