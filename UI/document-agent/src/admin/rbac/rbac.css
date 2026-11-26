@@ -1,0 +1,47 @@
+.admin-rbac-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-rbac-name small {
+  color: var(--chat-text-muted);
+}
+
+.admin-rbac-head-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-rbac-head-title code {
+  font-size: 0.8125rem;
+  color: var(--chat-text-muted);
+}
+
+.admin-rbac-edit {
+  display: grid;
+  gap: 4px;
+  max-width: 520px;
+  margin-top: 8px;
+}
+
+.admin-rbac-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 0.875rem;
+}
+
+.admin-rbac-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--chat-accent);
+}
+
+.admin-rbac-help {
+  margin-top: 12px;
+}

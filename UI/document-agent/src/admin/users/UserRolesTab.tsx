@@ -1,6 +1,11 @@
 import { Button } from "@mui/material";
 import { useEffect, useState } from "react";
-import { getUserRoles, removeUserRole, type UserRole, type UserRolesView } from "../../utils/api/users";
+import {
+  getUserRoles,
+  removeUserRole,
+  type UserRole,
+  type UserRolesView,
+} from "../../utils/api/users";
 import { apiErrorMessage } from "../../utils/apiError";
 import { useAdmin } from "../adminContext";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -18,10 +23,19 @@ const removeMessage = (role: UserRole) =>
         .join(", ")}.`
     : `Se quitará el rol «${role.name}» a este usuario. Perderá sus permisos en menos de 30 segundos.`;
 
-export const UserRolesTab = ({ userId }: { userId: string }) => {
+export const UserRolesTab = ({
+  userId,
+  onChanged,
+}: {
+  userId: string;
+  onChanged?: () => void;
+}) => {
   const { token } = useAdmin();
   const [view, setView] = useState<UserRolesView | null>(null);
-  const [loadError, setLoadError] = useState<{ userId: string; text: string } | null>(null);
+  const [loadError, setLoadError] = useState<{
+    userId: string;
+    text: string;
+  } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignKey, setAssignKey] = useState(0);
@@ -40,7 +54,8 @@ export const UserRolesTab = ({ userId }: { userId: string }) => {
         setLoadError(null);
       })
       .catch((e) => {
-        if (!controller.signal.aborted) setLoadError({ userId, text: apiErrorMessage(e) });
+        if (!controller.signal.aborted)
+          setLoadError({ userId, text: apiErrorMessage(e) });
       });
     return () => {
       controller.abort();
@@ -64,6 +79,7 @@ export const UserRolesTab = ({ userId }: { userId: string }) => {
     try {
       const { data } = await removeUserRole(token, userId, removing.id);
       setView(data);
+      onChanged?.();
     } catch (e) {
       setActionError(apiErrorMessage(e));
     } finally {
@@ -80,7 +96,9 @@ export const UserRolesTab = ({ userId }: { userId: string }) => {
         <div className="admin-user-cell">
           <span>
             {role.name}{" "}
-            {role.expired && !role.automatic && <StatusBadge tone="muted">Asignación manual caducada</StatusBadge>}
+            {role.expired && !role.automatic && (
+              <StatusBadge tone="muted">Asignación manual caducada</StatusBadge>
+            )}
           </span>
           <small>
             <code>{role.key}</code>
@@ -91,14 +109,24 @@ export const UserRolesTab = ({ userId }: { userId: string }) => {
     {
       key: "sources",
       header: "Origen",
-      render: (role) => (role.sources.length ? role.sources.map(sourceLabel).join(", ") : "—"),
+      render: (role) =>
+        role.sources.length ? role.sources.map(sourceLabel).join(", ") : "—",
     },
     {
       key: "expires",
       header: "Caducidad",
-      render: (role) => (role.assigned ? (role.expires_at ? formatDateTime(role.expires_at) : "Sin caducidad") : "—"),
+      render: (role) =>
+        role.assigned
+          ? role.expires_at
+            ? formatDateTime(role.expires_at)
+            : "Sin caducidad"
+          : "—",
     },
-    { key: "granted", header: "Asignado por", render: (role) => role.granted_by ?? "—" },
+    {
+      key: "granted",
+      header: "Asignado por",
+      render: (role) => role.granted_by ?? "—",
+    },
     {
       key: "actions",
       header: "",
@@ -111,7 +139,11 @@ export const UserRolesTab = ({ userId }: { userId: string }) => {
                 Cambiar caducidad
               </Button>
             )}
-            <Button size="small" color="error" onClick={() => setRemoving(role)}>
+            <Button
+              size="small"
+              color="error"
+              onClick={() => setRemoving(role)}
+            >
               Quitar
             </Button>
           </div>
@@ -136,7 +168,9 @@ export const UserRolesTab = ({ userId }: { userId: string }) => {
         )}
       </div>
       {current && !current.manage_all_roles && (
-        <p className="admin-muted">Solo ves los roles que pueden asignar los gerentes.</p>
+        <p className="admin-muted">
+          Solo ves los roles que pueden asignar los gerentes.
+        </p>
       )}
       {actionError && (
         <p className="admin-msg admin-msg--error" role="alert">
@@ -157,7 +191,8 @@ export const UserRolesTab = ({ userId }: { userId: string }) => {
       />
       {current?.roles.some((role) => role.automatic) && (
         <p className="admin-muted">
-          Los roles automáticos vienen de una asignación por departamento o puesto y se cambian en Roles y permisos.
+          Los roles automáticos vienen de una asignación por departamento o
+          puesto y se cambian en Roles y permisos.
         </p>
       )}
       {current && (
@@ -170,6 +205,7 @@ export const UserRolesTab = ({ userId }: { userId: string }) => {
           onCancel={() => setAssignOpen(false)}
           onAssigned={(next) => {
             setView(next);
+            onChanged?.();
             setAssignOpen(false);
           }}
         />

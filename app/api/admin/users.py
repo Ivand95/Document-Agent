@@ -20,6 +20,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from postgrest.exceptions import APIError
 
+from api.admin.rbac import is_super_admin_user
 from api.deps import get_access, require, require_any
 from core.config import _plain
 from models.rbac import RoleAssign
@@ -39,6 +40,7 @@ require_users_or_rbac_admin = require_any("admin", "admin_area", "users", "rbac"
 
 NOT_FOUND = "Usuario no encontrado."
 ONLY_SUPER_ADMIN = "Solo un super administrador puede hacer este cambio."
+NOT_YOURSELF_DEPARTMENTS = "No puedes cambiar tus propios departamentos."
 PROTECTED = {
     "self": "No puedes cambiar el estado de tu propia cuenta.",
     "super_admin": "Solo un super administrador puede cambiar el estado de otro.",
@@ -170,6 +172,15 @@ def _profile_or_404(user_id) -> dict:
     return profile
 
 
+def guard_departments(actor: Access, user_id):
+    """The actor may change this user's extra departments: not their own, and not a super admin's unless they
+    are one (same rule as the user's roles and permissions)."""
+    if str(user_id) == str(actor.user_id):
+        raise HTTPException(status_code=400, detail=NOT_YOURSELF_DEPARTMENTS)
+    if not actor.is_super_admin and is_super_admin_user(user_id):
+        raise HTTPException(status_code=403, detail=ONLY_SUPER_ADMIN)
+
+
 @router.get("/{user_id}/admin-departments")
 async def list_admin_departments_endpoint(user_id: uuid.UUID, _claims: dict = Depends(require_rbac_admin)):
     return await asyncio.to_thread(lambda: _admin_departments(_profile_or_404(user_id)))
@@ -177,13 +188,17 @@ async def list_admin_departments_endpoint(user_id: uuid.UUID, _claims: dict = De
 
 @router.post("/{user_id}/admin-departments", status_code=201)
 async def add_admin_department_endpoint(
-    user_id: uuid.UUID, request: AdminDepartmentRequest, claims: dict = Depends(require_rbac_admin)
+    user_id: uuid.UUID,
+    request: AdminDepartmentRequest,
+    claims: dict = Depends(require_rbac_admin),
+    actor: Access = Depends(get_access),
 ):
     """Adds a department to a department admin's scope. It must be a known department (from a user's
     profile or a role mapping); it is stored with that spelling."""
 
     def run():
         profile = _profile_or_404(user_id)
+        guard_departments(actor, user_id)
         if not admin_scope.is_department_admin(profile):
             raise HTTPException(status_code=409, detail="El usuario no es administrador de departamento.")
         wanted = _plain(request.department)
@@ -206,12 +221,16 @@ async def add_admin_department_endpoint(
     return await asyncio.to_thread(run)
 
 
-@router.delete("/{user_id}/admin-departments/{department}")
+@router.delete("/{user_id}/admin-departments/{department:path}")
 async def remove_admin_department_endpoint(
-    user_id: uuid.UUID, department: str, claims: dict = Depends(require_rbac_admin)
+    user_id: uuid.UUID,
+    department: str,
+    claims: dict = Depends(require_rbac_admin),
+    actor: Access = Depends(get_access),
 ):
     def run():
         profile = _profile_or_404(user_id)
+        guard_departments(actor, user_id)
         stored = next((d["department"] for d in users.list_admin_departments(user_id)
                        if _plain(d["department"]) == _plain(department)), None)
         if stored is None or not users.remove_admin_department(user_id, stored):

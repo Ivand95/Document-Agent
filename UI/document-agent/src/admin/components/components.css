@@ -78,7 +78,6 @@
 }
 
 .admin-input {
-  width: 100%;
   padding: 8px 10px;
   font: inherit;
   color: var(--chat-text);
@@ -136,4 +135,188 @@
 .admin-row-expanded td {
   padding: 10px 16px 14px 48px;
   background: var(--chat-hover);
+}
+
+/* ---- Shared detail header ---- */
+.admin-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.admin-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 0.8125rem;
+  color: var(--admin-link);
+  text-decoration: none;
+}
+
+.admin-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-detail-head h2 {
+  margin: 0 0 4px;
+}
+
+.admin-detail-badges {
+  display: flex;
+  gap: 6px;
+}
+
+/* ---- Sub-navigation (e.g. Roles · Asignación automática) ---- */
+.admin-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--chat-border);
+}
+
+.admin-subnav a {
+  padding: 8px 12px;
+  font-size: 0.875rem;
+  color: var(--chat-text-muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+
+.admin-subnav a:hover {
+  color: var(--chat-text);
+}
+
+.admin-subnav a.active {
+  font-weight: 600;
+  color: var(--chat-text);
+  border-bottom-color: var(--chat-accent);
+}
+
+/* ---- JsonField ---- */
+.admin-json {
+  min-height: 140px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8125rem;
+  resize: vertical;
+}
+
+/* ---- PermissionMatrix ---- */
+.admin-matrix {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.admin-matrix-search {
+  max-width: 320px;
+}
+
+.admin-matrix-group {
+  border: 1px solid var(--chat-border);
+  border-radius: var(--chat-radius-sm);
+}
+
+.admin-matrix-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  color: var(--chat-text);
+  background: var(--chat-surface);
+  border: 0;
+  border-radius: var(--chat-radius-sm);
+  cursor: pointer;
+}
+
+.admin-matrix-group-head:focus-visible {
+  outline: 2px solid var(--chat-accent);
+  outline-offset: -2px;
+}
+
+.admin-matrix-body {
+  overflow-x: auto;
+}
+
+.admin-matrix-table td:first-child {
+  width: 45%;
+}
+
+.admin-matrix-resource,
+.admin-matrix-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.admin-matrix-resource code {
+  font-size: 0.75rem;
+  color: var(--chat-text-muted);
+}
+
+.admin-matrix-badge {
+  padding: 1px 8px;
+  font-size: 0.75rem;
+  color: var(--chat-text-muted);
+  border: 1px solid var(--chat-border);
+  border-radius: 999px;
+}
+
+.admin-page .admin-matrix-toggle .MuiToggleButton-root {
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 0.8125rem;
+  text-transform: none;
+  color: var(--chat-text-muted);
+  border-color: var(--chat-border);
+}
+
+.admin-page .admin-matrix-toggle .MuiToggleButton-root.Mui-selected {
+  color: var(--chat-text);
+  background: var(--chat-hover);
+}
+
+.admin-page .admin-matrix-toggle .admin-matrix-allow.Mui-selected {
+  color: #fff;
+  background: var(--chat-accent);
+}
+
+.admin-page .admin-matrix-toggle .admin-matrix-deny.Mui-selected {
+  color: #fff;
+  background: #c0392b;
+}
+
+.admin-page .admin-matrix-toggle .MuiToggleButton-root.Mui-disabled {
+  opacity: 0.6;
+}
+
+.admin-matrix-budget {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+}
+
+.admin-matrix-budget .admin-input {
+  width: 110px;
+}
+
+.admin-page .admin-matrix .MuiIconButton-root {
+  color: var(--chat-text-muted);
+}
+
+.admin-matrix-group-title {
+  margin: 0;
+  font-size: inherit;
 }

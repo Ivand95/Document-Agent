@@ -1,5 +1,5 @@
 import './App.css'
-import { BrowserRouter, Route, Routes } from 'react-router'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './routes/ProtectedRoute'
 import { PublicRoute } from './routes/PublicRoute'
 import { lazy, Suspense, useEffect, useState } from 'react'
@@ -19,6 +19,10 @@ const IngestionPage = lazy(() => import('./admin/ingestion/IngestionPage').then(
 const UsersList = lazy(() => import('./admin/users/UsersList').then((m) => ({ default: m.UsersList })))
 const UserDetail = lazy(() => import('./admin/users/UserDetail').then((m) => ({ default: m.UserDetail })))
 const AuditPage = lazy(() => import('./admin/audit/AuditPage').then((m) => ({ default: m.AuditPage })))
+const RbacLayout = lazy(() => import('./admin/rbac/RbacLayout').then((m) => ({ default: m.RbacLayout })))
+const RolesList = lazy(() => import('./admin/rbac/RolesList').then((m) => ({ default: m.RolesList })))
+const RoleDetail = lazy(() => import('./admin/rbac/RoleDetail').then((m) => ({ default: m.RoleDetail })))
+const MappingsPage = lazy(() => import('./admin/rbac/MappingsPage').then((m) => ({ default: m.MappingsPage })))
 
 const STORAGE_KEY = 'document-agent-user'
 const EMPTY_USER: UserInfo = { access_token: '', name: '', email: '', department: '' }
@@ -135,6 +139,19 @@ function App() {
                 </RequireArea>
               }
             />
+            <Route
+              path="rbac"
+              element={
+                <RequireArea area="rbac">
+                  <RbacLayout />
+                </RequireArea>
+              }
+            >
+              <Route index element={<Navigate to="roles" replace />} />
+              <Route path="roles" element={<RolesList />} />
+              <Route path="roles/:id" element={<RoleDetail />} />
+              <Route path="mappings" element={<MappingsPage />} />
+            </Route>
             <Route path="*" element={<AdminIndex />} />
           </Route>
         </Routes>

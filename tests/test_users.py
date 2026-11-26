@@ -363,6 +363,30 @@ class AdminUsersTest(EnvTestCase):
         self.assertIn("user.admin_department_add", actions)
         self.assertIn("user.admin_department_remove", actions)
 
+    def test_admin_departments_refuse_self_and_super_admin_targets(self):
+        h = self.login()
+        for call in (
+            lambda uid: self.client.post(f"/admin/users/{uid}/admin-departments", json={"department": "Marketing"},
+                                         headers=h),
+            lambda uid: self.client.delete(f"/admin/users/{uid}/admin-departments/Marketing", headers=h),
+        ):
+            r = call(UID)  # themselves
+            self.assertEqual((r.status_code, r.json()["detail"]),
+                             (400, "No puedes cambiar tus propios departamentos."))
+            root = self.rbac.add_user("Marketing", roles=["department_admin", "super_admin"])
+            r = call(root)
+            self.assertEqual((r.status_code, r.json()["detail"]),
+                             (403, "Solo un super administrador puede hacer este cambio."))
+
+    def test_admin_departments_with_a_slash_can_be_removed(self):
+        manager_id, _ = self.manager()
+        self.rbac.add_user("Ventas/Norte")
+        path = f"/admin/users/{manager_id}/admin-departments"
+        self.assertEqual(self.client.post(path, json={"department": "Ventas/Norte"}, headers=self.login()).status_code,
+                         201)
+        r = self.client.delete(f"{path}/Ventas/Norte", headers=self.login())
+        self.assertEqual((r.status_code, r.json()["extra"]), (200, []))
+
     # --- Roles ------------------------------------------------------------------------------------------
 
     def roles(self, user_id=OTHER, headers=None):

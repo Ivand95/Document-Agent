@@ -191,7 +191,20 @@ class EvaluationTest(unittest.TestCase):
         decisions = {(d["resource_type"], d["resource_id"]): d for d in e["decisions"]}
         self.assertTrue(decisions[("doc_category", "MKT")]["allowed"])
         self.assertEqual(decisions[("doc_category", "FI")]["reason"], "no_rule")
-        self.assertEqual(len(decisions), len(catalog.AGENTS) + len(catalog.ADMIN_AREAS) + len(CATEGORY_LABELS))
+        self.assertEqual(
+            len(decisions),
+            len(catalog.AGENTS) + len(catalog.ADMIN_AREAS) + len(CATEGORY_LABELS)
+            + len(catalog.known_ids("capability")) + len(catalog.known_ids("model")),
+        )
+
+    def test_explain_includes_models(self):
+        with mock.patch.dict(catalog._SOURCES, {"model": lambda: {"openai:gpt-x": "GPT X"}}):
+            e = access("Marketing").explain()
+        models = [d for d in e["decisions"] if d["resource_type"] == "model"]
+        self.assertEqual(
+            [(d["resource_id"], d["action"], d["allowed"], d["reason"]) for d in models],
+            [("openai:gpt-x", "use", False, "no_rule")],
+        )
 
 
 class LegacyFallbackTest(NoLegacyEnv):

@@ -26,39 +26,6 @@
   opacity: 0.6;
 }
 
-.admin-row-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.admin-back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 8px;
-  font-size: 0.8125rem;
-  color: var(--admin-link);
-  text-decoration: none;
-}
-
-.admin-detail-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.admin-detail-head h2 {
-  margin: 0 0 4px;
-}
-
-.admin-detail-badges {
-  display: flex;
-  gap: 6px;
-}
-
 .admin-facts {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -73,4 +40,42 @@
 
 .admin-facts dd {
   margin: 0;
+}
+
+.admin-effective-list {
+  margin: 4px 0;
+  padding-left: 18px;
+  font-size: 0.8125rem;
+}
+
+.admin-effective-list code {
+  font-size: 0.75rem;
+  color: var(--chat-text-muted);
+}
+
+.admin-departments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-departments li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.admin-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-inline .admin-input {
+  min-width: 220px;
 }

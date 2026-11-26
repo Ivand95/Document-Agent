@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { http } from "../axios";
-import { listUsers } from "./users";
+import { listUsers, removeAdminDepartment } from "./users";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -18,5 +18,15 @@ describe("listUsers", () => {
       { q: "ana@example.com", status: "pending", limit: 10 },
       { headers: { Authorization: "Bearer tok" }, signal },
     );
+  });
+});
+
+describe("removeAdminDepartment", () => {
+  it("encodes the department in the path", async () => {
+    const del = vi.spyOn(http, "delete").mockResolvedValue({ data: {} });
+    await removeAdminDepartment("tok", "u1", "I+D Comercial");
+    expect(del).toHaveBeenCalledWith("/admin/users/u1/admin-departments/I%2BD%20Comercial", {
+      headers: { Authorization: "Bearer tok" },
+    });
   });
 });

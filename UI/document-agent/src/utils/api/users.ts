@@ -104,3 +104,30 @@ export const assignUserRole = (token: string, id: string, body: { role_id: strin
 
 export const removeUserRole = (token: string, id: string, roleId: string) =>
   http.delete<UserRolesView>(`/admin/users/${id}/roles/${roleId}`, bearer(token));
+
+export interface AdminDepartment {
+  department: string;
+  created_at: string;
+  created_by: string;
+}
+
+/** GET /admin/users/{id}/admin-departments (rbac area): the departments a department admin manages. */
+export interface AdminDepartmentsView {
+  user_id: string;
+  is_department_admin: boolean;
+  /** From Microsoft 365: always managed, can't be removed */
+  department: string | null;
+  extra: AdminDepartment[];
+}
+
+export const getAdminDepartments = (token: string, id: string, signal?: AbortSignal) =>
+  http.get<AdminDepartmentsView>(`/admin/users/${id}/admin-departments`, { ...bearer(token), signal });
+
+export const addAdminDepartment = (token: string, id: string, department: string) =>
+  http.post<AdminDepartmentsView>(`/admin/users/${id}/admin-departments`, { department }, bearer(token));
+
+export const removeAdminDepartment = (token: string, id: string, department: string) =>
+  http.delete<AdminDepartmentsView>(
+    `/admin/users/${id}/admin-departments/${encodeURIComponent(department)}`,
+    bearer(token),
+  );

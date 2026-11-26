@@ -267,6 +267,7 @@ class Access:
         decisions = []
         for resource_type, action in (
             ("agent", "use"), ("admin_area", "admin"), ("doc_category", "use"), ("capability", "use"),
+            ("model", "use"),
         ):
             for resource_id in known_ids(resource_type):
                 d = self.check(action, resource_type, resource_id)

@@ -3,35 +3,70 @@ import { CircularProgress, Tab, Tabs } from "@mui/material";
 import { isAxiosError } from "axios";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useParams, useSearchParams } from "react-router";
-import { getUser, type UserDetail as UserDetailData } from "../../utils/api/users";
+import {
+  getAdminDepartments,
+  getUser,
+  type UserDetail as UserDetailData,
+} from "../../utils/api/users";
 import { apiErrorMessage } from "../../utils/apiError";
 import { useAdmin } from "../adminContext";
 import { visibleAreas } from "../areas";
 import { StatusBadge } from "../components/StatusBadge";
-import { PROTECTED_LABELS, STATUS_LABELS, STATUS_TONES, displayName } from "./userLabels";
+import { useApiResource } from "../useApiResource";
+import {
+  PROTECTED_LABELS,
+  STATUS_LABELS,
+  STATUS_TONES,
+  displayName,
+} from "./userLabels";
 import { UserActivityTab } from "./UserActivityTab";
+import { UserDepartmentsTab } from "./UserDepartmentsTab";
+import { UserEffectiveTab } from "./UserEffectiveTab";
+import { UserPermissionsTab } from "./UserPermissionsTab";
 import { UserRolesTab } from "./UserRolesTab";
 import { UserStatusTab } from "./UserStatusTab";
 import { usersStateQ } from "./usersSearch";
 import "./users.css";
 
-type DetailTab = "status" | "roles" | "activity";
+type DetailTab =
+  "status" | "roles" | "permissions" | "effective" | "departments" | "activity";
 
 export const UserDetail = () => {
   const { id = "" } = useParams();
   const { token, refreshSummary, permissions } = useAdmin();
-  const canAudit = visibleAreas(permissions.admin_areas).some((area) => area.id === "audit");
+  const open = visibleAreas(permissions.admin_areas).map((area) => area.id);
+  const canAudit = open.includes("audit");
+  const canRbac = open.includes("rbac");
+  const loadDepartments = useCallback(
+    (signal: AbortSignal) =>
+      getAdminDepartments(token, id, signal).then(({ data }) => data),
+    [token, id],
+  );
+  // Only to know whether the user is a department admin (the tab) and what they manage; errors just hide the tab
+  const departments = useApiResource(canRbac ? id : null, loadDepartments);
+  const isDepartmentAdmin = departments.data?.is_department_admin === true;
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
   /** The list's URL filters and search text when coming from it (UsersList passes them as state) */
   const listSearch = (location.state as { from?: string } | null)?.from ?? "";
   const listQ = usersStateQ(location.state);
-  const requestedTab = searchParams.get("tab");
+  const available: DetailTab[] = [
+    "status",
+    "roles",
+    ...(canRbac ? (["permissions", "effective"] as const) : []),
+    ...(isDepartmentAdmin ? (["departments"] as const) : []),
+    ...(canAudit ? (["activity"] as const) : []),
+  ];
+  const requestedTab = searchParams.get("tab") as DetailTab | null;
   const tab: DetailTab =
-    requestedTab === "roles" ? "roles" : requestedTab === "activity" && canAudit ? "activity" : "status";
+    requestedTab && available.includes(requestedTab) ? requestedTab : "status";
 
   const [user, setUser] = useState<UserDetailData | null>(null);
-  const [failure, setFailure] = useState<{ id: string; text: string; notFound: boolean } | null>(null);
+  const [failure, setFailure] = useState<{
+    id: string;
+    text: string;
+    notFound: boolean;
+  } | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -46,7 +81,11 @@ export const UserDetail = () => {
         if (!controller.signal.aborted) {
           // 422: the id isn't a UUID, so no such user either
           const status = isAxiosError(e) ? e.response?.status : undefined;
-          setFailure({ id, text: apiErrorMessage(e), notFound: status === 404 || status === 422 });
+          setFailure({
+            id,
+            text: apiErrorMessage(e),
+            notFound: status === 404 || status === 422,
+          });
         }
       });
     return () => {
@@ -64,7 +103,11 @@ export const UserDetail = () => {
   const currentFailure = failure?.id === id ? failure : null;
 
   const back = (
-    <Link to={`/admin/users${listSearch}`} state={listQ ? { q: listQ } : null} className="admin-back-link">
+    <Link
+      to={`/admin/users${listSearch}`}
+      state={listQ ? { q: listQ } : null}
+      className="admin-back-link"
+    >
       <ArrowBack fontSize="small" /> Usuarios
     </Link>
   );
@@ -75,7 +118,9 @@ export const UserDetail = () => {
         {back}
         {currentFailure ? (
           <p className="admin-msg admin-msg--error">
-            {currentFailure.notFound ? "Usuario no encontrado o fuera de tu alcance." : currentFailure.text}
+            {currentFailure.notFound
+              ? "Usuario no encontrado o fuera de tu alcance."
+              : currentFailure.text}
           </p>
         ) : (
           <div className="admin-center">
@@ -94,29 +139,78 @@ export const UserDetail = () => {
           <div>
             <h2>{displayName(current)}</h2>
             <p className="admin-muted">
-              {current.email ?? "—"} · {current.department ?? "Sin departamento"} · {current.position ?? "Sin puesto"}
+              {current.email ?? "—"} ·{" "}
+              {current.department ?? "Sin departamento"} ·{" "}
+              {current.position ?? "Sin puesto"}
             </p>
           </div>
           <div className="admin-detail-badges">
-            <StatusBadge tone={STATUS_TONES[current.status]}>{STATUS_LABELS[current.status]}</StatusBadge>
-            {current.protected && <StatusBadge tone="muted">🔒 {PROTECTED_LABELS[current.protected]}</StatusBadge>}
+            <StatusBadge tone={STATUS_TONES[current.status]}>
+              {STATUS_LABELS[current.status]}
+            </StatusBadge>
+            {current.protected && (
+              <StatusBadge tone="muted">
+                🔒 {PROTECTED_LABELS[current.protected]}
+              </StatusBadge>
+            )}
           </div>
         </div>
-        {currentFailure && <p className="admin-msg admin-msg--error">{currentFailure.text}</p>}
+        {currentFailure && (
+          <p className="admin-msg admin-msg--error">{currentFailure.text}</p>
+        )}
         <Tabs
           value={tab}
-          onChange={(_, value: DetailTab) => setSearchParams(value === "status" ? {} : { tab: value }, { replace: true, state: location.state })}
+          onChange={(_, value: DetailTab) =>
+            setSearchParams(value === "status" ? {} : { tab: value }, {
+              replace: true,
+              state: location.state,
+            })
+          }
           aria-label="Secciones del usuario"
+          variant="scrollable"
+          allowScrollButtonsMobile
           className="admin-tabs"
         >
           <Tab value="status" label="Estado" />
           <Tab value="roles" label="Roles" />
+          {canRbac && <Tab value="permissions" label="Permisos directos" />}
+          {canRbac && <Tab value="effective" label="Permisos efectivos" />}
+          {isDepartmentAdmin && (
+            <Tab value="departments" label="Departamentos administrados" />
+          )}
           {canAudit && <Tab value="activity" label="Actividad" />}
         </Tabs>
       </section>
-      {tab === "status" && <UserStatusTab user={current} onChanged={reload} />}
-      {tab === "roles" && <UserRolesTab userId={current.id} />}
-      {tab === "activity" && <UserActivityTab key={current.id} user={current} />}
+      {tab === "status" && (
+        <UserStatusTab
+          user={current}
+          onChanged={() => {
+            reload();
+            departments.reload();
+          }}
+        />
+      )}
+      {tab === "roles" && (
+        <UserRolesTab userId={current.id} onChanged={departments.reload} />
+      )}
+      {tab === "permissions" && <UserPermissionsTab user={current} />}
+      {tab === "effective" && <UserEffectiveTab userId={current.id} />}
+      {tab === "departments" && departments.data && (
+        <UserDepartmentsTab
+          view={departments.data}
+          onChange={departments.setData}
+          lock={
+            current.protected === "self"
+              ? "Es tu cuenta: no puedes cambiar tus propios departamentos."
+              : current.protected === "super_admin"
+                ? "Es un super administrador: solo otro super administrador puede cambiarlo."
+                : null
+          }
+        />
+      )}
+      {tab === "activity" && (
+        <UserActivityTab key={current.id} user={current} />
+      )}
     </>
   );
 };
