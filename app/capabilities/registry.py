@@ -14,7 +14,8 @@ from datetime import datetime
 from capabilities import native, secrets
 from capabilities.catalog import AUTH_TYPES, CONNECTION_STATUSES, DATA_CLASSES, KINDS, RISKS
 from capabilities.configs import (
-    validate_arg_schema, validate_config, validate_connection_config, validate_limits, validate_secret,
+    validate_arg_schema, validate_command, validate_config, validate_connection_config, validate_limits,
+    validate_secret,
 )
 from core.config import SUPABASE_SCHEMA, global_supabase_client
 from rbac import catalog as rbac_catalog
@@ -24,7 +25,7 @@ log = logging.getLogger("capabilities")
 
 CACHE_SECONDS = float(os.getenv("CAPABILITY_CACHE_SECONDS", "30"))
 CAPABILITY_FIELDS = "id,key,kind,name,description,enabled,risk,data_class,config,version"
-OPERATION_FIELDS = "capability_id,operation,description,enabled,read_only,arg_schema,limits"
+OPERATION_FIELDS = "capability_id,operation,description,enabled,read_only,arg_schema,limits,command"
 # Everything but the ciphertext: the API never sees it
 CONNECTION_FIELDS = (
     "id,capability_id,name,auth_type,config,scopes,secret_updated_at,status,status_detail,last_check_at,"
@@ -41,6 +42,7 @@ class Operation:
     read_only: bool = False
     arg_schema: dict = field(default_factory=lambda: {"type": "object"})
     limits: dict = field(default_factory=dict)
+    command: tuple | None = None  # CLI: the command template (WP6)
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,7 @@ def _operation(row) -> Operation:
         capability_id=row["capability_id"], operation=row["operation"], description=row.get("description") or "",
         enabled=bool(row.get("enabled")), read_only=bool(row.get("read_only")),
         arg_schema=row.get("arg_schema") or {"type": "object"}, limits=row.get("limits") or {},
+        command=tuple(row["command"]) if row.get("command") else None,
     )
 
 
@@ -238,20 +241,25 @@ def delete_capability(capability_id) -> bool:
 
 
 def add_operation(capability_id, operation: str, description: str, arg_schema: dict, limits: dict,
-                  read_only: bool, by: str) -> dict:
-    row = _db().table("capability_operations").insert({
+                  read_only: bool, by: str, command: list | None = None) -> dict:
+    arg_schema = validate_arg_schema(arg_schema)
+    values = {
         "capability_id": str(capability_id), "operation": operation, "description": description or "",
-        "enabled": False, "read_only": bool(read_only), "arg_schema": validate_arg_schema(arg_schema),
+        "enabled": False, "read_only": bool(read_only), "arg_schema": arg_schema,
         "limits": validate_limits(limits), "updated_by": by,
-    }).execute().data[0]
+    }
+    if command is not None:
+        values["command"] = validate_command(command, arg_schema)
+    row = _db().table("capability_operations").insert(values).execute().data[0]
     invalidate()
     return row
 
 
 def update_operation(capability_id, operation: str, changes: dict, by: str) -> dict | None:
-    """changes: any of enabled, read_only, description, arg_schema, limits (the API decides which ones
-    each kind allows)."""
-    allowed = {"enabled", "read_only", "description", "arg_schema", "limits"}
+    """changes: any of enabled, read_only, description, arg_schema, limits, command (the API decides which
+    ones each kind allows). A command is checked against the (new or current) argument schema, and a new
+    schema against the current command."""
+    allowed = {"enabled", "read_only", "description", "arg_schema", "limits", "command"}
     unknown = set(changes) - allowed
     if unknown:
         raise ValueError(f"No se puede cambiar: {', '.join(sorted(unknown))}")
@@ -260,6 +268,11 @@ def update_operation(capability_id, operation: str, changes: dict, by: str) -> d
         update["arg_schema"] = validate_arg_schema(update["arg_schema"])
     if "limits" in update:
         update["limits"] = validate_limits(update["limits"])
+    if "command" in update or "arg_schema" in update:
+        current = get_operation(capability_id, operation) or {}
+        command = update.get("command", current.get("command"))
+        if command is not None:
+            validate_command(command, update.get("arg_schema", current.get("arg_schema")))
     update.update({"updated_at": _now(), "updated_by": by})
     rows = (
         _db().table("capability_operations").update(update).eq("capability_id", str(capability_id))

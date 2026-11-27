@@ -429,6 +429,19 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual((env["MCP_SECRET_DSN"], env["MCP_SECRET_PASS_WORD"]), ("postgres://x", "y"))
         self.assertNotIn("SUPABASE_KEY", env)
 
+    def test_stdio_servers_never_run_as_root(self):
+        import pwd
+
+        self.assertEqual(transport.stdio_launch("/bin/x", ["a"]), ("/bin/x", ["a"]))  # not root
+        user = pwd.struct_passwd(("toolrunner", "x", 999, 998, "", "/", "/usr/sbin/nologin"))
+        with mock.patch.object(transport.sandbox, "run_as", return_value=user), \
+                mock.patch.object(transport.os.path, "isfile", return_value=True):
+            self.assertEqual(transport.stdio_launch("/bin/x", ["a"]), (transport.SETPRIV, [
+                "--reuid", "999", "--regid", "998", "--clear-groups", "--", "/bin/x", "a"]))
+        with mock.patch.object(transport.sandbox, "run_as", side_effect=CapabilityError("not_available", "root")):
+            with self.assertRaises(CapabilityError):
+                transport.stdio_launch("/bin/x", [])
+
     def test_token_headers(self):
         self.assertEqual(transport._headers({"auth_type": "token", "config": {}}, {"token": "t"}),
                          {"Authorization": "Bearer t"})

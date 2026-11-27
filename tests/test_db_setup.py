@@ -635,6 +635,21 @@ class PostgresIntegrationTest(unittest.TestCase):
             marked = q("select key from @@roles where manager_assignable order by key")
             self.assertEqual([m[0] for m in marked], ["audio_user"])
 
+    def test_cli_commands_column(self):
+        import psycopg
+
+        db_setup.apply_migrations(self.dsn)
+        with self.connect() as c:
+            c.execute("set role service_role")
+            q = lambda sql, *a: c.execute(sql.replace("@@", self.schema + "."), a).fetchall()  # noqa: E731
+            cap = q("insert into @@capabilities (key, kind, name) values ('meta_cli', 'cli', 'Meta') returning id")[0][0]
+            q("insert into @@capability_operations (capability_id, operation, command) "
+              "values (%s, 'insights', '[\"insights\", \"{account}\"]') returning 1", cap)
+            self.assertEqual(q("select command from @@capability_operations")[0][0], ["insights", "{account}"])
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                with c.transaction():
+                    q("update @@capability_operations set command = '{\"a\": 1}' returning 1")
+
 
 if __name__ == "__main__":
     unittest.main()

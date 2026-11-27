@@ -25,7 +25,7 @@ DEFAULTS = {
     },
     "capability_operations": lambda: {
         "description": "", "enabled": False, "read_only": False, "arg_schema": {"type": "object"}, "limits": {},
-        "created_at": _now(), "updated_at": None, "updated_by": None,
+        "command": None, "created_at": _now(), "updated_at": None, "updated_by": None,
     },
     "connections": lambda: {
         "id": str(uuid.uuid4()), "capability_id": None, "config": {}, "scopes": [], "secret_ciphertext": None,

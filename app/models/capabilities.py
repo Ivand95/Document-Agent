@@ -33,6 +33,8 @@ class OperationCreate(BaseModel):
     arg_schema: dict = Field(default_factory=lambda: {"type": "object", "properties": {}})
     limits: dict = Field(default_factory=dict)
     read_only: bool = False
+    # CLI: the command template, e.g. ["insights", "--account", "{account}", ["--since={since}"]]
+    command: list | None = None
 
 
 class OperationUpdate(BaseModel):
@@ -41,6 +43,7 @@ class OperationUpdate(BaseModel):
     description: str | None = Field(None, max_length=2000)
     arg_schema: dict | None = None
     limits: dict | None = None
+    command: list | None = None  # CLI only
 
 
 class ConnectionCreate(BaseModel):

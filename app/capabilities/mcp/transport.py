@@ -17,11 +17,11 @@ from mcp import Client, StdioServerParameters
 from mcp.client.streamable_http import streamable_http_client
 from mcp_types import Implementation
 
-from capabilities import registry
+from capabilities import registry, sandbox
 from capabilities.gateway import CapabilityError
 from capabilities.registry import Capability
 
-BIN_DIR_ENV = "CAPABILITY_BIN_DIR"
+BIN_DIR_ENV = sandbox.BIN_DIR_ENV
 MAX_SSE_EVENT_BYTES = 2_000_000
 CLIENT_INFO = Implementation(name="coop-agent", version="1.0")
 HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,64}$")
@@ -60,15 +60,23 @@ def _headers(connection: dict | None, secret: dict | None) -> dict:
 
 
 def stdio_command(command: str) -> str:
-    """The executable inside CAPABILITY_BIN_DIR, refusing anything that resolves outside it."""
-    base = os.getenv(BIN_DIR_ENV)
-    if not base:
-        raise CapabilityError("not_available", f"{BIN_DIR_ENV} is not set: stdio servers are off")
-    base = os.path.realpath(base)
-    path = os.path.realpath(os.path.join(base, command))
-    if os.path.dirname(path) != base or not os.path.isfile(path) or not os.access(path, os.X_OK):
-        raise CapabilityError("not_available", f"{command!r} is not an executable in {BIN_DIR_ENV}")
-    return path
+    """The executable inside CAPABILITY_BIN_DIR (capabilities/sandbox.py)."""
+    return sandbox.resolve_executable(command)
+
+
+SETPRIV = "/usr/bin/setpriv"
+
+
+def stdio_launch(path: str, args: list[str]) -> tuple[str, list[str]]:
+    """The MCP SDK starts stdio servers itself and can't switch users: when the app is root, the server
+    is started through setpriv as CAPABILITY_RUN_AS_USER with no extra groups (sandbox.run_as refuses
+    when that user isn't set)."""
+    user = sandbox.run_as()
+    if user is None:
+        return path, args
+    if not os.path.isfile(SETPRIV):
+        raise CapabilityError("not_available", "the app runs as root and setpriv is missing")
+    return SETPRIV, ["--reuid", str(user.pw_uid), "--regid", str(user.pw_gid), "--clear-groups", "--", path, *args]
 
 
 def _stdio_env(secret: dict | None) -> dict:
@@ -85,8 +93,8 @@ async def open_client(target: Target, *, auth=None, timeout: float = 30):
     connection = target.connection
     if config.get("transport", "streamable_http") == "stdio":
         secret = registry.read_secret(connection["id"]) if connection else None
-        server = StdioServerParameters(command=stdio_command(config["command"]), args=list(config.get("args") or []),
-                                       env=_stdio_env(secret))
+        command, args = stdio_launch(stdio_command(config["command"]), list(config.get("args") or []))
+        server = StdioServerParameters(command=command, args=args, env=_stdio_env(secret))
         async with Client(server, read_timeout_seconds=timeout, client_info=CLIENT_INFO) as client:
             yield client
         return

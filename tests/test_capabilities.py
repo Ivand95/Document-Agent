@@ -114,7 +114,8 @@ class ConfigRulesTest(unittest.TestCase):
 
     def test_cli_config(self):
         self.assertEqual(configs.validate_config("cli", {"executable": "sqlcmd"}),
-                         {"executable": "sqlcmd", "timeout_seconds": 30})
+                         {"executable": "sqlcmd", "timeout_seconds": 30, "memory_mb": 512, "env": {},
+                          "env_from_connection": [], "check_args": []})
         for bad in ({"executable": "/usr/bin/sqlcmd"}, {"executable": "a b"}, {"executable": ".."},
                     {"executable": "x", "timeout_seconds": 0}, {}):
             with self.assertRaises(ValueError, msg=bad):
@@ -373,8 +374,8 @@ class GatewayTest(RegistryCase):
         self.assertLess(len(result.text), 400)
 
     def test_kinds_without_an_executor_are_hidden_and_refused(self):
-        cap = registry.create_capability("ads", "cli", "Ads", "", "read", "sensitive",
-                                         {"executable": "ads-cli"}, "t")  # CLI: no executor until WP6
+        cap = registry.create_capability("ads", "skill", "Ads", "", "read", "sensitive",
+                                         {}, "t")  # skills: no executor until WP13
         registry.update_capability(cap, {"enabled": True}, "t")
         self.rbac.db.tables["capability_operations"].append(
             {"capability_id": cap["id"], "operation": "list", "enabled": True, "read_only": True,
@@ -486,8 +487,9 @@ class AdminApiTest(RegistryCase):
     def test_cli_operations(self):
         cid = self.create(key="sqlcmd", kind="cli", config={"executable": "sqlcmd"}).json()["id"]
         r = self.client.post(f"/admin/capabilities/{cid}/operations", headers=self.admin, json={
-            "operation": "query", "read_only": True,
-            "arg_schema": {"type": "object", "properties": {"sql": {"type": "string"}}}})
+            "operation": "query", "read_only": True, "command": ["-Q", "{view}"],
+            "arg_schema": {"type": "object", "properties": {"view": {"type": "string", "enum": ["ventas"]}},
+                           "required": ["view"]}})
         self.assertEqual(r.status_code, 201, r.text)
         self.assertFalse(r.json()["enabled"])
         bad = self.client.post(f"/admin/capabilities/{cid}/operations", headers=self.admin,

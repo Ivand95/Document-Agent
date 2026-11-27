@@ -237,6 +237,8 @@ def check_search_ready(client=global_supabase_client):
         f"table {SUPABASE_SCHEMA}.permissions": lambda: schema.table("permissions").select("id").limit(1).execute(),
         # Tools, MCP servers and CLIs the agents may call
         f"table {SUPABASE_SCHEMA}.capabilities": lambda: schema.table("capabilities").select("id,last_test").limit(1).execute(),
+        f"table {SUPABASE_SCHEMA}.capability_operations": lambda: schema.table("capability_operations")
+        .select("operation,command").limit(1).execute(),
         f"table {SUPABASE_SCHEMA}.llm_models": lambda: schema.table("llm_models").select("id").limit(1).execute(),
     }
     problems = []

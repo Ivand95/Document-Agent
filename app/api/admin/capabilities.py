@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from postgrest.exceptions import APIError
 
 from api.deps import get_access, require
+from capabilities import cli_runner  # noqa: F401  (registers the CLI executor and health check)
 from capabilities import health, native, prompt_tools, registry, secrets
 from capabilities.gateway import CapabilityError
 from capabilities.mcp import oauth
@@ -231,21 +232,24 @@ def add_operation_endpoint(
     capability_id: uuid.UUID, request: OperationCreate,
     claims: dict = Depends(require_capabilities_admin), actor: Access = Depends(get_access),
 ):
-    """CLI only: its operations (subcommands) are defined by hand. Added disabled."""
+    """CLI only: its operations (subcommands) are defined by hand, each with its command template (see
+    capabilities/configs.py validate_command). Added disabled."""
     capability = capability_or_404(capability_id)
     if capability["kind"] != "cli":
         raise HTTPException(status_code=400, detail="Solo las capacidades CLI definen operaciones a mano.")
+    if request.command is None:
+        raise HTTPException(status_code=422, detail="command es obligatorio para una operación CLI.")
     if request.read_only and capability["risk"] != "read" and not actor.is_super_admin:
         raise HTTPException(status_code=403, detail=ONLY_SUPER_ADMIN)
     try:
         operation = registry.add_operation(capability_id, request.operation, request.description, request.arg_schema,
-                                           request.limits, request.read_only, by(claims))
+                                           request.limits, request.read_only, by(claims), request.command)
     except ValueError as e:
         invalid(e)
     except APIError as e:
         db_errors(e)
     audit.record(claims, "operation.create", "capability", capability["key"],
-                 details={"operation": request.operation, "read_only": request.read_only})
+                 details={"operation": request.operation, "read_only": request.read_only, "command": request.command})
     return operation
 
 
@@ -266,7 +270,7 @@ def update_operation_endpoint(
     if kind in ("mcp", "cli"):
         editable.add("read_only")
     if kind == "cli":
-        editable |= {"description", "arg_schema"}
+        editable |= {"description", "arg_schema", "command"}
     refused = set(changes) - editable
     if refused:
         detail = FROM_CODE if kind == "tool" else f"No se puede cambiar: {', '.join(sorted(refused))}"

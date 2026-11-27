@@ -14,6 +14,10 @@ RUN apt-get update && apt-get install -y \
 
 RUN pip install --no-cache-dir uv
 
+# CLI tools and stdio MCP servers (WP6) never run as root: the app starts them as this user
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin toolrunner
+ENV CAPABILITY_RUN_AS_USER=toolrunner
+
 COPY pyproject.toml uv.lock ./
 
 RUN uv sync --no-dev

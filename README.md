@@ -107,6 +107,18 @@ whose description or schema changes upstream is disabled again. In a chat, users
 servers they were given for that conversation (`GET /me/mcps`; WebSocket frames `{"type": "mcps"}` and
 `{"type": "mcp_toggle", "key": ..., "enabled": false}`; `disabled_mcps` in `POST /chat`).
 
+### CLI tools
+
+A CLI capability (kind `cli`) is an executable in `CAPABILITY_BIN_DIR` (config `executable`: a name,
+never a path). Each operation is added by hand with an argument schema and a command template, e.g.
+`["insights", "--account", "{account}", ["--since={since}"]]`: the first part is fixed, `{x}` stands for
+an argument, and a list is an optional group left out when its argument isn't given. Every argument the
+template uses must be bounded by its schema (`enum`, `pattern` with `maxLength`, `format: date`,
+numbers, booleans): no free text reaches a command line. Programs run without a shell, in a fresh
+temporary directory, with a minimal environment (config `env`, plus secrets mapped from the connection
+with `env_from_connection`), time, memory and output limits, and never as root
+(`CAPABILITY_RUN_AS_USER`).
+
 ### Prompt tools
 
 Admins with the `prompt_tools` admin area (roles `admin`, `tool_admin`; migration 0008) build tools
